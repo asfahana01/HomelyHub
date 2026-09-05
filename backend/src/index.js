@@ -3,6 +3,8 @@ import dotenv from "dotenv";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import connectDB from "./utils/db.js";
+import {router} from "./routes/userRoutes.js"
+
 dotenv.config();
 const app = express();
 //express.json
@@ -20,6 +22,10 @@ const PORT = process.env.PORT;
 app.get("/",(req,res)=>{
   res.send("HomelyHub Backend server is running");
 }) 
+
+//testing in postman
+//common url
+app.use("/api/v1/rent/user",router)
 
 connectDB();
 
