@@ -31,10 +31,10 @@ const bookingSchema = new mongoose.Schema(
       type:Boolean,
       default:true
     },
-    fromdate:{
+    fromDate:{
       type:Date
     },
-    todate:{
+    toDate:{
       type:Date
     },
     guests:{
@@ -52,7 +52,7 @@ bookingSchema.pre(/^find/, function(){
   this.populate("user");
     
     this.populate({
-    path:property,
+    path:"property",
     select:"maximumGuest images propertyName address"
   });
 })

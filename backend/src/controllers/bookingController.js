@@ -4,7 +4,7 @@ import { Booking } from "../models/bookingModel.js";
 
 //create order: booking any property
 const createOrder = async(req,res)=>{
-  const {amount, propertyId, fromdate, toDate, guests} = req.body
+  const {amount, propertyId, fromDate, toDate, guests} = req.body
 
   //oderID
   const orderId = "oder_"+Date.now();
