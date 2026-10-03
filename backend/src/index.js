@@ -4,6 +4,8 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import connectDB from "./utils/db.js";
 import {router} from "./routes/userRoutes.js"
+import {propertyRouter} from "./routes/propertyRouter.js";
+import {bookingRouter} from "./routes/bookingRouter.js";
 
 dotenv.config();
 const app = express();
@@ -26,6 +28,8 @@ app.get("/",(req,res)=>{
 //testing in postman
 //common url
 app.use("/api/v1/rent/user",router)
+app.use("/api/v1/rent/listing",propertyRouter)
+app.use("/api/v1/rent/user/booking",bookingRouter)
 
 connectDB();
 
