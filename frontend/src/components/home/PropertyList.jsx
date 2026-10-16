@@ -4,8 +4,8 @@ import gsap from "gsap";
 import "../../css/Home.css";
 
 import {useDispatch, useSelector} from "react-redux";
-import {propertyAction} from "../../store/Property/property-slice";
-import {getAllProperties} from "../../store/Property/property-action";
+import {propertyAction} from "../../store/Property/property-slice"
+import { getAllProperties } from "../../store/Property/property-action";
 
 const Card = ({ id, image, name, address, price }) => {
   return (
@@ -34,23 +34,23 @@ const Card = ({ id, image, name, address, price }) => {
 };
 
 const PropertyList = () => {
-  const [currentPage, setCurrentPage] = useState({ page: 1 });
-
- const dispatch = useDispatch();
- const {properties, totalProperties} = useSelector((state)=>state.properties);
- 
+  const [currentPage, setCurrentPage] = useState({page:1});
+  
+  const dispatch = useDispatch();
+  const {properties,totalProperties} = useSelector((state)=> state.properties)
 
   const lastPage = Math.ceil(totalProperties / 12);
 
   const propertyListRef = useRef(null);
 
   useEffect(() => {
-    const fetchProperties = async (page) =>{
-      dispatch(propertyAction.updatesearchParams(page));
+     const fetchProperties = async (page) =>{
+      dispatch(propertyAction.updateSearchParams(page));
       dispatch(getAllProperties())
-    };
-    fetchProperties(currentPage)
+     };
+     fetchProperties(currentPage)
   }, [currentPage, dispatch]);
+
 
   useEffect(() => {
     if (propertyListRef.current) {
@@ -91,7 +91,7 @@ const PropertyList = () => {
       <div className="pagination">
         <button
           className="previous_btn"
-          onClick={() => setCurrentPage((prev) => ({ page: prev.page - 1 }))}
+           onClick={() => setCurrentPage((prev) => ({ page: prev.page - 1 }))}
           disabled={currentPage.page === 1}
         >
           <span className="material-symbols-outlined">arrow_back_ios_new</span>
@@ -99,7 +99,7 @@ const PropertyList = () => {
 
         <button
           className="next_btn"
-          onClick={() => setCurrentPage((prev) => ({ page: prev.page + 1 }))}
+           onClick={() => setCurrentPage((prev) => ({ page: prev.page + 1 }))}
           disabled={properties.length < 12 || currentPage.page === lastPage}
         >
           <span className="material-symbols-outlined">arrow_forward_ios</span>
