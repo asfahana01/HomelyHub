@@ -45,10 +45,12 @@ const createTripPlan = async(req,res) =>{
     })
   }
   catch(error){
-    res.status(500).json({
-      status:"fail",
-      message:"An error occurred while creating the trip plan"
-    })
+     console.error("TRIP PLANNER ERROR:", error);
+
+  res.status(500).json({
+    status: "fail",
+    message: error.message || "An error occurred while creating the trip plan"
+  });
   }
 }
 

@@ -1,10 +1,10 @@
 import Groq from "groq-sdk";
-import dotenv from "dotenv"
+import dotenv from "dotenv";
 
-dotenv.config()
+dotenv.config();
 
-const froq = new Groq({
-  apiKey:process.env.GROQ_API_KEY
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY
 });
 
-export default Groq;
+export default groq;

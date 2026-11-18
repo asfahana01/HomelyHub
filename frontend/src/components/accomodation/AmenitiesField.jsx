@@ -1,7 +1,7 @@
 import React from "react";
 
 const initialamenities = [
-  { id: "wifi", value: "Wifi", checked: false, icon: "wifi" },
+  { id: "wifi", value: "wifi", checked: false, icon: "wifi" },
   {
     id: "kitchen",
     value: "Kitchen",

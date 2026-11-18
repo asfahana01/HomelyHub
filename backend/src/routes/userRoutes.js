@@ -14,6 +14,9 @@ import {
 import {createTripPlan } from "../controllers/tripController.js"
 
 import { createProperty, getUsersProperties } from "../controllers/propertyController.js";
+import {
+  generatePropertyDescription
+} from "../controllers/aiController.js";
 
 const router = express.Router();
 
@@ -30,5 +33,7 @@ router.route("/createTripPlan").post(protect, createTripPlan);
 
 router.route("/newAccommodation").post(protect, createProperty);
 router.route("/myAccommodation").get(protect, getUsersProperties);
+
+router.route("/generateDescription").post(generatePropertyDescription);
 
 export { router };
