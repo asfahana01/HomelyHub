@@ -26,8 +26,18 @@ const Section = ({ icon, title, hint, children }) => (
 const AccomodationForm = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
+  const { user } = useSelector((state) => state.user);
   const { loading } = useSelector((state) => state.accomodation);
   const [aiLoading, setAiLoading] = useState(false);
+
+  const isAdmin = user && user.role === "admin";
+
+  React.useEffect(() => {
+    if (user && !isAdmin) {
+      toast.error("Only administrators can access property creation");
+      navigate("/profile");
+    }
+  }, [user, isAdmin, navigate]);
 
   const form = useForm({
     defaultValues: {

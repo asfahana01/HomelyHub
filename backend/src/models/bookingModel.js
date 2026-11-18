@@ -1,62 +1,79 @@
-//which property??
-//which user
-//price
-//dates
-//guests
-//paid
-
 import mongoose from "mongoose";
+
 const bookingSchema = new mongoose.Schema(
   {
-    property:{
-      type:mongoose.Schema.ObjectId,
-      ref:"Property",
-      required:[true,"Booking must belong to a property"]
+    property: {
+      type: mongoose.Schema.ObjectId,
+      ref: "Property",
+      required: [true, "Booking must belong to a property"],
     },
-    user:{
-      type:mongoose.Schema.ObjectId,
-      ref:"User",
-      required:[true,"Booking must belong to a user"]
+    user: {
+      type: mongoose.Schema.ObjectId,
+      ref: "User",
+      required: [true, "Booking must belong to a user"],
     },
-
-    price:{
-      type:Number,
-      required:[true,"Booking must have price"] 
+    price: {
+      type: Number,
+      required: [true, "Booking must have a price"],
+      min: [1, "Booking price must be a positive number"],
     },
-    createdAt:{
-      type:Date,
-      default:Date.now()
+    paid: {
+      type: Boolean,
+      default: false, // SAFE DEFAULT: payments start unpaid until cryptographically verified
     },
-    paid:{
-      type:Boolean,
-      default:true
+    paymentStatus: {
+      type: String,
+      enum: ["pending", "authorized", "paid", "failed", "cancelled"],
+      default: "pending",
     },
-    fromDate:{
-      type:Date
+    razorpayOrderId: {
+      type: String,
     },
-    toDate:{
-      type:Date
+    razorpayPaymentId: {
+      type: String,
     },
-    guests:{
-      type:Number
+    razorpaySignature: {
+      type: String,
     },
-    numberOfnights:{
-      type:Number
-    }
+    fromDate: {
+      type: Date,
+      required: [true, "Booking must have a check-in date"],
+    },
+    toDate: {
+      type: Date,
+      required: [true, "Booking must have a check-out date"],
+    },
+    guests: {
+      type: Number,
+      required: [true, "Booking must have guest count"],
+      min: [1, "At least 1 guest is required"],
+    },
+    numberOfnights: {
+      type: Number,
+      required: [true, "Booking must have number of nights"],
+      min: [1, "At least 1 night is required"],
+    },
   },
-  {timestamps:true}
+  { timestamps: true }
 );
 
-//^find = findOne() or findByid
-bookingSchema.pre(/^find/, function(){
-  this.populate("user");
-    
-    this.populate({
-    path:"property",
-    select:"maximumGuest images propertyName address"
+// Indexes for performance and lookup integrity
+bookingSchema.index({ user: 1, createdAt: -1 });
+bookingSchema.index({ property: 1, fromDate: 1, toDate: 1 });
+bookingSchema.index({ razorpayOrderId: 1 });
+
+// Query middleware - only populate necessary public fields
+bookingSchema.pre(/^find/, function () {
+  this.populate({
+    path: "user",
+    select: "name avatar email phoneNumber",
   });
-})
+  this.populate({
+    path: "property",
+    select: "maximumGuest images propertyName address price",
+  });
+});
 
-const Booking = mongoose.model("Booking", bookingSchema)
+const Booking = mongoose.models.Booking || mongoose.model("Booking", bookingSchema);
 
-export {Booking};
+export { Booking };

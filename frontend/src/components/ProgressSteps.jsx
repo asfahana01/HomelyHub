@@ -1,9 +1,12 @@
 import React from "react";
 import { NavLink, useLocation } from "react-router-dom";
+import { useSelector } from "react-redux";
 import "../css/ProgressSteps.css";
 
 const ProgressSteps = () => {
   const location = useLocation();
+  const { user } = useSelector((state) => state.user);
+  const isAdmin = user && user.role === "admin";
 
   return (
     <div className="checkout-progress d-flex justify-content-center mt-5">
@@ -29,16 +32,18 @@ const ProgressSteps = () => {
         <div className="triangle-right"></div>
       </NavLink>
 
-      <NavLink
-        to="/accomodation"
-        className={`progress-button ${
-          location.pathname === "/accomodation" ? "active-button" : ""
-        }`}
-      >
-        <div className="triangle-left"></div>
-        My Accommodations
-        <div className="triangle-right"></div>
-      </NavLink>
+      {isAdmin && (
+        <NavLink
+          to="/accomodation"
+          className={`progress-button ${
+            location.pathname === "/accomodation" ? "active-button" : ""
+          }`}
+        >
+          <div className="triangle-left"></div>
+          Manage Accommodations
+          <div className="triangle-right"></div>
+        </NavLink>
+      )}
     </div>
   );
 };

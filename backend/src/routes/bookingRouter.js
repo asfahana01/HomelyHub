@@ -1,20 +1,23 @@
 import express from "express";
+import {
+  getBookingDetails,
+  getUserBookings,
+  createOrder,
+  verifyPayment,
+  razorpayWebhook,
+} from "../controllers/bookingController.js";
+import { protect } from "../controllers/authController.js";
+import { paymentLimiter } from "../utils/security.js";
 
 const bookingRouter = express.Router();
-import {
-  getBookingDetails, 
-  getUserBookings,
-   createOrder,
-  verifyPayment
-}from "../controllers/bookingController.js";
 
-//not loggin in => cannot book 
+// Webhook endpoint (publicly reachable by Razorpay, signature-verified)
+bookingRouter.post("/webhook", razorpayWebhook);
 
-import {protect} from "../controllers/authController.js";
+// Protected booking endpoints
+bookingRouter.get("/", protect, getUserBookings);
+bookingRouter.get("/:bookingId", protect, getBookingDetails);
+bookingRouter.post("/create-order", protect, paymentLimiter, createOrder);
+bookingRouter.post("/verify-payment", protect, paymentLimiter, verifyPayment);
 
-bookingRouter.get("/" , protect, getUserBookings);
-bookingRouter.get("/:bookingId",protect, getBookingDetails);
-bookingRouter.post("/create-order",protect, createOrder);
-bookingRouter.post("/verify-payment",protect, verifyPayment);
-
-export {bookingRouter};
+export { bookingRouter };

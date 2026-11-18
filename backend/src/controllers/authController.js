@@ -28,6 +28,7 @@ const signup = async (req, res) => {
       password: req.body.password,
       passwordConfirm: req.body.passwordConfirm,
       avatar: { url: req.body.avatar || defaultAvatarUrl(req.body.name) },
+      role: "user", // strictly enforce role to normal user
     });
     createSendToken(newUser, 201, res);
   } catch (error) {
@@ -36,7 +37,7 @@ const signup = async (req, res) => {
       ? `An account with that ${duplicatedField} already exists`
       : error.message;
 
-    res.status(400).json({ message });
+    res.status(400).json({ status: "fail", message });
   }
 };
 
@@ -108,72 +109,86 @@ const logout = (req, res) => {
   });
 };
 
-// 4. PROTECT - the guard. THE most important one today.
+// 4. PROTECT - authentication verification middleware
 
-// This is a middleware. It runs BEFORE the real
-// work and decides whether the request may go ahead.
-// It checks 4 things:  is there a token? is it real? does
-// that user still exist? did he change his password since?
 const protect = async (req, res, next) => {
   try {
-    // Step 1 - find the token. It can come in 2 places.
     let token;
-    // Place 1 - the Authorization header, used by Postman
-    // and mobile apps. It looks like:  Bearer <token>
     if (
       req.headers.authorization &&
       req.headers.authorization.startsWith("Bearer")
     ) {
-      // split on the space, [1] is the part after 'Bearer'
       token = req.headers.authorization.split(" ")[1];
-      // Place 2 - the cookie, which the browser sends by itself.
-      // We skip 'loggedout' - that is our own logout marker.
     } else if (req.cookies.jwt && req.cookies.jwt !== "loggedout") {
       token = req.cookies.jwt;
     }
 
-    // Step 2 - no token at all means not logged in.
     if (!token) {
-      throw new Error("You are not logged in!! Please login to access");
+      return res.status(401).json({
+        status: "fail",
+        message: "You are not logged in! Please log in to get access.",
+      });
     }
 
-    // Step 3 - verify does 2 jobs together:
-    //   is the signature made with OUR secret? (not a fake)
-    //   has it expired?  (JWT_EXPIRES_IN)
-    // If either fails it throws, and catch below sends 401.
-    // decoded is what was inside: { id, iat, exp }
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (!process.env.JWT_SECRET) {
+      return res.status(500).json({
+        status: "error",
+        message: "JWT secret is not configured on the server",
+      });
+    }
 
-    // Step 4 - the token is real, but is the user still there?
-    // The account may have been deleted after the token was
-    // given. Real ticket, but the person is gone.
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (jwtErr) {
+      if (jwtErr.name === "TokenExpiredError") {
+        return res.status(401).json({
+          status: "fail",
+          message: "Your session has expired! Please log in again.",
+        });
+      }
+      return res.status(401).json({
+        status: "fail",
+        message: "Invalid authentication token. Please log in again.",
+      });
+    }
+
     const currentUser = await User.findById(decoded.id);
     if (!currentUser) {
-      throw new Error("the user belonging to the token dosen't exists");
+      return res.status(401).json({
+        status: "fail",
+        message: "The user belonging to this token no longer exists.",
+      });
     }
 
-    // Step 5 - the stolen token case. If someone stole your
-    // token and you then changed your password, the old token
-    // must stop working. iat = 'issued at', when the token was
-    // made. This method came from userModel.js on day 2.
     if (currentUser.changedPasswordAfter(decoded.iat)) {
-      throw new Error("user recently changed the password, Please login again");
+      return res.status(401).json({
+        status: "fail",
+        message: "User recently changed password! Please log in again.",
+      });
     }
 
-    // Step 6 - all checks passed. Stick the user on the
-    // request, so every function after this can just say
-    // req.user without asking the database again.
     req.user = currentUser;
-
-    // 'guard is happy, carry on'. Without next() the request
-    // would hang forever.
     next();
   } catch (error) {
     res.status(401).json({
       status: "fail",
-      message: error.message,
+      message: error.message || "Authentication failed",
     });
   }
+};
+
+// 4.1 RESTRICT TO - role-based authorization guard
+const restrictTo = (...roles) => {
+  return (req, res, next) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      return res.status(403).json({
+        status: "fail",
+        message: "You do not have permission to perform this action",
+      });
+    }
+    next();
+  };
 };
 
 // 5. UPDATE ME - change my name, phone or photo
@@ -189,6 +204,24 @@ const updateMe = async (req, res) => {
     const usingInitials = currentAvatarUrl.includes("ui-avatars.com");
 
     if (sentPhoto) {
+      const avatarStr = String(req.body.avatar);
+      const isHttpUrl = /^https?:\/\//i.test(avatarStr);
+      const isBase64Image = /^data:image\/(jpeg|jpg|png|webp);base64,/i.test(avatarStr);
+
+      if (!isHttpUrl && !isBase64Image) {
+        return res.status(400).json({
+          status: "fail",
+          message: "Invalid image format. Allowed formats: JPEG, PNG, WEBP, or valid URL.",
+        });
+      }
+
+      if (isBase64Image && avatarStr.length > 5 * 1024 * 1024 * 1.37) {
+        return res.status(400).json({
+          status: "fail",
+          message: "Avatar image exceeds maximum allowed size of 5MB.",
+        });
+      }
+
       const uploadResponse = await imagekit.upload({
         file: req.body.avatar,
         fileName: `avatar_${Date.now()}.jpg`,
@@ -396,6 +429,7 @@ export {
   login,
   logout,
   protect,
+  restrictTo,
   updateMe,
   resetPassword,
   forgotPassword,

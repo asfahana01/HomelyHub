@@ -1,57 +1,95 @@
-// receve the user's info
-//validate the required information
-//send the info to out AI trip planner
-//calculate the budget per night
-// search MongoDB for suitable properties
-// send both AI trip plan + matching properties back to the frontend / user
+import { Property } from "../models/propertyModel.js";
+import { planTrip } from "../ai/tripPlanner.js";
 
-import {Property} from "../models/propertyModel.js"
-import {planTrip} from "../ai/tripPlanner.js"
+const cleanCity = (text) =>
+  String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
 
-const cleanCity = (text) => text.toLowerCase().replaceAll(" ", "")
+const createTripPlan = async (req, res) => {
+  try {
+    const { destination, budget, days, people, interests } = req.body;
 
-const createTripPlan = async(req,res) =>{
-  try{
-    const{destination, budget, days, people, interests} = req.body
-
-    if(!destination || !budget || !days || !people){
+    if (!destination || !budget || !days || !people) {
       return res.status(400).json({
-        status:"fail",
-        message:"Please fill in destination, budget, days, and people"
-      })
+        status: "fail",
+        message: "Please provide destination, budget, days, and number of people",
+      });
     }
+
+    // Input validation
+    const destStr = String(destination).trim();
+    if (destStr.length < 2 || destStr.length > 100) {
+      return res.status(400).json({
+        status: "fail",
+        message: "Destination must be between 2 and 100 characters",
+      });
+    }
+
+    const budgetNum = Number(budget);
+    if (!Number.isFinite(budgetNum) || budgetNum <= 0 || budgetNum > 10000000) {
+      return res.status(400).json({
+        status: "fail",
+        message: "Budget must be a valid positive number up to ₹1,00,00,000",
+      });
+    }
+
+    const daysNum = parseInt(days, 10);
+    if (!Number.isInteger(daysNum) || daysNum < 1 || daysNum > 30) {
+      return res.status(400).json({
+        status: "fail",
+        message: "Days must be an integer between 1 and 30",
+      });
+    }
+
+    const peopleNum = parseInt(people, 10);
+    if (!Number.isInteger(peopleNum) || peopleNum < 1 || peopleNum > 30) {
+      return res.status(400).json({
+        status: "fail",
+        message: "Number of people must be an integer between 1 and 30",
+      });
+    }
+
+    let sanitizedInterests = [];
+    if (Array.isArray(interests)) {
+      sanitizedInterests = interests
+        .slice(0, 10)
+        .map((i) => String(i).trim().slice(0, 50))
+        .filter(Boolean);
+    }
+
     const plan = await planTrip({
-      destination,
-      budget,
-      days,
-      people, 
-      interests : interests || []
+      destination: destStr,
+      budget: budgetNum,
+      days: daysNum,
+      people: peopleNum,
+      interests: sanitizedInterests,
     });
 
-    const perNight = Number(budget) / Number(days);
-    const city = cleanCity(destination);
+    const perNight = Math.round(budgetNum / daysNum);
+    const city = cleanCity(destStr);
+
     const properties = await Property.find({
-      $or:[
-        {"address.city":city},
-        {"address.state": city},
-        {"address.area": city}
+      $or: [
+        { "address.city": city },
+        { "address.state": city },
+        { "address.area": city },
       ],
-      price:{$lte: perNight},
-      maximumGuest:{$gte: Number(people)},
+      price: { $lte: perNight },
+      maximumGuest: { $gte: peopleNum },
     }).limit(6);
+
     res.status(200).json({
-      status:"success",
-      data:{plan, properties, perNight}
-    })
+      status: "success",
+      data: { plan, properties, perNight },
+    });
+  } catch (error) {
+    console.error("TRIP PLANNER ERROR:", error);
+    res.status(500).json({
+      status: "fail",
+      message: "An error occurred while creating the trip plan. Please try again later.",
+    });
   }
-  catch(error){
-     console.error("TRIP PLANNER ERROR:", error);
+};
 
-  res.status(500).json({
-    status: "fail",
-    message: error.message || "An error occurred while creating the trip plan"
-  });
-  }
-}
-
-export {createTripPlan}
+export { createTripPlan };

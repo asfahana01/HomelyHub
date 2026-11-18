@@ -70,25 +70,39 @@ const userSchema = new mongoose.Schema(
 //settings to not pass in response from server
 //encryption of password before saving user
 userSchema.set("toJSON", {
-  transform:function(doc,ret){
+  transform: function (doc, ret) {
     delete ret.password;
     delete ret.passwordConfirm;
     delete ret.passwordResetToken;
     delete ret.passwordResetExpires;
     delete ret.__v;
     return ret;
-  }
-}
-)
+  },
+});
+
+userSchema.set("toObject", {
+  transform: function (doc, ret) {
+    delete ret.password;
+    delete ret.passwordConfirm;
+    delete ret.passwordResetToken;
+    delete ret.passwordResetExpires;
+    delete ret.__v;
+    return ret;
+  },
+});
 
 //password logic
 //hashing
-userSchema.pre("save", async function (){
-  if(!this.isModified("password")) return;
+userSchema.pre("save", async function () {
+  if (!this.isModified("password")) return;
 
-  this.password = await bcrypt.hash(this.password,12)
+  this.password = await bcrypt.hash(this.password, 12);
   this.passwordConfirm = undefined;
-})
+
+  if (!this.isNew) {
+    this.passwordChangedAt = new Date(Date.now() - 1000);
+  }
+});
 
 //login check
 userSchema.methods.correctPassword = async function(candidatePassword, userPassword){
@@ -118,6 +132,6 @@ userSchema.methods.createPasswordResetToken = function(){
     return resetToken;
 }
 
-const User = mongoose.model("User", userSchema);
+const User = mongoose.models.User || mongoose.model("User", userSchema);
 //in mongodb User becomes users in collection name
-export {User};
+export { User };

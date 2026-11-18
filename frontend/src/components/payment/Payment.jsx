@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import "../../css/Payment.css";
 import {
   initiateCheckoutSession,
@@ -13,12 +13,29 @@ import { useSelector, useDispatch } from "react-redux";
 import { useNavigate, useParams } from "react-router-dom";
 import toast from "react-hot-toast";
 
+// Safely inject the official Razorpay Checkout SDK
+const loadRazorpayScript = () => {
+  return new Promise((resolve) => {
+    if (window.Razorpay) {
+      resolve(true);
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.async = true;
+    script.onload = () => resolve(true);
+    script.onerror = () => resolve(false);
+    document.body.appendChild(script);
+  });
+};
+
 const Payment = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const { propertyId } = useParams();
-  const [showPaymentGateaway, setShowPaymentGateaway] = useState(false);
+  const [processing, setProcessing] = useState(false);
 
+  const { user } = useSelector((state) => state.user);
   const {
     checkinDate,
     checkoutDate,
@@ -28,151 +45,94 @@ const Payment = () => {
     nights,
   } = useSelector(selectPaymentDetails);
 
-  const { loading, error, orderData } = useSelector(selectPaymentStatus);
+  const { loading, error } = useSelector(selectPaymentStatus);
 
   const handleBooking = async () => {
-    const paymentData = {
-      amount: totalPrice,
-      propertyId,
-      fromDate: checkinDate,
-      toDate: checkoutDate,
-      guests,
-    };
+    if (processing || loading) return;
+
+    setProcessing(true);
     try {
-      await dispatch(initiateCheckoutSession(paymentData));
-    } catch {
-      toast.error("Payment initiation failed");
-    }
-  };
-  const handleConfirmPayment = async () => {
-    try {
-      await dispatch(
-        verifyPayment({
-          orderId: orderData.orderId,
-          bookingDetails: {
-            propertyId,
-            fromDate: checkinDate,
-            toDate: checkoutDate,
-            guests,
-            price: totalPrice,
-          },
-          forceStatus: "success",
+      const isScriptLoaded = await loadRazorpayScript();
+      if (!isScriptLoaded) {
+        toast.error("Failed to load Razorpay payment gateway. Please check your internet connection.");
+        setProcessing(false);
+        return;
+      }
+
+      const orderData = await dispatch(
+        initiateCheckoutSession({
+          propertyId,
+          fromDate: checkinDate,
+          toDate: checkoutDate,
+          guests,
         })
       );
 
-      toast.success("🎉 Payment Successful! Booking Confirmed!");
-      setTimeout(() => navigate("/user/mybookings"), 1000);
-      dispatch(paymentActions.resetPayment());
-    } catch {
-      toast.error("Payment failed!");
+      if (!orderData || !orderData.orderId) {
+        toast.error("Unable to generate payment order. Please try again.");
+        setProcessing(false);
+        return;
+      }
+
+      // Configure Razorpay Standard Checkout options
+      const options = {
+        key: orderData.keyId,
+        amount: orderData.amount, // amount in paise
+        currency: orderData.currency || "INR",
+        name: "HomelyHub",
+        description: `Booking for ${propertyName || "HomelyHub Rental"}`,
+        order_id: orderData.orderId,
+        handler: async function (response) {
+          try {
+            await dispatch(
+              verifyPayment({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+              })
+            );
+            toast.success("🎉 Payment Successful! Booking Confirmed!");
+            dispatch(paymentActions.resetPayment());
+            setTimeout(() => navigate("/user/mybookings"), 1200);
+          } catch (err) {
+            toast.error(err.message || "Payment verification failed.");
+          } finally {
+            setProcessing(false);
+          }
+        },
+        prefill: {
+          name: user?.name || "",
+          email: user?.email || "",
+          contact: user?.phoneNumber || "",
+        },
+        notes: {
+          propertyId,
+          nights,
+        },
+        theme: {
+          color: "#0e8b53",
+        },
+        modal: {
+          ondismiss: function () {
+            toast("Payment checkout cancelled.");
+            setProcessing(false);
+          },
+        },
+      };
+
+      const razorpayInstance = new window.Razorpay(options);
+      razorpayInstance.on("payment.failed", function (response) {
+        toast.error(response.error?.description || "Payment failed at gateway.");
+        setProcessing(false);
+      });
+
+      razorpayInstance.open();
+    } catch (err) {
+      toast.error(err.message || "Payment initiation failed.");
+      setProcessing(false);
     }
   };
 
-  const handleCancelPayment = () => {
-    toast.error("Payment Cancelled");
-    navigate(`/propertylist/${propertyId}`);
-  };
-  useEffect(() => {
-    if (orderData && !showPaymentGateaway) {
-      setShowPaymentGateaway(true);
-    }
-  }, [orderData]);
-  if (showPaymentGateaway && orderData) {
-    return (
-      <div className="payment-gateway-overlay">
-        <div className="payment-gateway-modal">
-
-          <div className="gateway-header">
-            <div className="gateway-logo">
-              <h2>🏠 HomelyHub</h2>
-              <span>Payment Gateway</span>
-            </div>
-            <div className="secure-badge">
-              <span>🔒 Secure Payment</span>
-            </div>
-          </div>
-
-          <div className="gateway-content">
-            <div className="merchant-info">
-              <h3>
-                Payment to: <strong>HomelyHub</strong>
-              </h3>
-              <p>
-                Order ID: <strong>{orderData.orderId}</strong>
-              </p>
-            </div>
-
-            <div className="payment-summary">
-              <div className="summary-item">
-                <span>Property:</span>
-                <span>{propertyName}</span>
-              </div>
-              <div className="summary-item">
-                <span>Check-in:</span>
-                <span>{checkinDate}</span>
-              </div>
-              <div className="summary-item">
-                <span>Check-out:</span>
-                <span>{checkoutDate}</span>
-              </div>
-              <div className="summary-item">
-                <span>Guests:</span>
-                <span>{guests}</span>
-              </div>
-              <div className="summary-item">
-                <span>Nights:</span>
-                <span>{nights}</span>
-              </div>
-              <div className="summary-item total-amount">
-                <span>
-                  <strong>Total Amount:</strong>
-                </span>
-                <span>
-                  <strong>₹{totalPrice.toLocaleString("en-IN")}</strong>
-                </span>
-              </div>
-            </div>
-
-            {error && <div className="error-message">{error}</div>}
-
-            <div className="gateway-actions">
-              <button
-                onClick={handleCancelPayment}
-                className="cancel-btn"
-                disabled={loading}
-              >
-                Cancel Payment
-              </button>
-              <button
-                onClick={handleConfirmPayment}
-                className="confirm-btn"
-                disabled={loading}
-              >
-                {loading ? (
-                  <>
-                    <span className="spinner"></span>
-                    Processing...
-                  </>
-                ) : (
-                  <>
-                    <span>🔒</span>
-                    Confirm Payment ₹{totalPrice.toLocaleString("en-IN")}
-                  </>
-                )}
-              </button>
-            </div>
-
-            <div className="security-info">
-              <p>
-                <span>🛡️</span>
-                Your payment information is encrypted and secure
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
   return (
     <div className="payment-container">
       <div className="payment-header">
@@ -181,7 +141,6 @@ const Payment = () => {
       </div>
 
       <div className="payment-content">
-
         <div className="booking-summary-card">
           <h3>Booking Details</h3>
           <div className="detail-row">
@@ -211,10 +170,14 @@ const Payment = () => {
         <div className="payment-action">
           <button
             onClick={handleBooking}
-            disabled={loading}
+            disabled={loading || processing}
             className="book-now-btn"
           >
-            {loading ? "Processing..." : `Proceed to Payment ₹${totalPrice}`}
+            {loading || processing ? (
+              "Processing..."
+            ) : (
+              `Proceed to Payment ₹${totalPrice}`
+            )}
           </button>
         </div>
       </div>

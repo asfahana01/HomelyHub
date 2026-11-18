@@ -45,15 +45,11 @@ import jwt from "jsonwebtoken";
 // anyone holding a token can read what is inside it. It cannot
 // be CHANGED without the secret, but it CAN be read.
 const signinToken = (id) => {
-  // jwt.sign takes three things:
-  //   { id }              -> what to write on the ticket
-  //   JWT_SECRET          -> the secret used to sign it. It is
-  //                          in .env, never in the code, and
-  //                          never on GitHub.
-  //   expiresIn           -> after this time the ticket is dead
-  //                          and the user must log in again.
+  if (!process.env.JWT_SECRET) {
+    throw new Error("JWT_SECRET is not configured in environment variables");
+  }
   return jwt.sign({ id }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES_IN,
+    expiresIn: process.env.JWT_EXPIRES_IN || "7d",
   });
 };
 
@@ -61,61 +57,33 @@ const signinToken = (id) => {
 // ------------------------------------------------------------
 // 2. MAKE THE TOKEN, PUT IT IN A COOKIE, SEND THE REPLY
 // ------------------------------------------------------------
-// user       -> the user we just created or just logged in
-// statusCode -> 201 for "created" (signup), 200 for "ok" (login)
-// res        -> the reply object, so we can send it back
 const createSendToken = (user, statusCode, res) => {
-  // Step 1 - make the ticket for THIS user.
-  // user._id is the id mongodb gave them.
   const token = signinToken(user._id);
+  const cookieExpiresDays = Number(process.env.JWT_COOKIE_EXPIRES_IN) || 7;
+  const isProduction = process.env.NODE_ENV === "production";
 
-  // Step 2 - the rules for the cookie.
   const cookieOptions = {
-    // When should the browser throw this cookie away?
-    // Date.now() is right now in milliseconds. Then
-    // days * 24 hours * 60 minutes * 60 seconds * 1000 turns
-    // JWT_COOKIE_EXPIRES_IN (a number of days) into milliseconds.
     expires: new Date(
-      Date.now() + process.env.JWT_COOKIE_EXPIRES_IN * 24 * 60 * 60 * 1000
+      Date.now() + cookieExpiresDays * 24 * 60 * 60 * 1000
     ),
-
-    // httpOnly: true = JavaScript in the browser CANNOT read
-    // this cookie. Only the browser can send it back to us.
-    // This stops a bad script on the page from stealing the
-    // token. This one line is real security, not decoration.
     httpOnly: true,
-
-    // sameSite decides whether the cookie is sent when the
-    // request comes from a different website address.
-    // On the live site the frontend and backend sit on
-    // different addresses, so we need "none".
-    // On our laptop both are localhost, so "lax" is fine.
-    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-
-    // secure: true = only send this cookie over https.
-    // On the laptop we use plain http, so it must be false
-    // there, otherwise the cookie would never arrive.
-    secure: process.env.NODE_ENV === "production",
+    sameSite: isProduction ? "none" : "lax",
+    secure: isProduction,
+    path: "/",
   };
 
-  // Step 3 - attach the cookie to the reply.
-  // "jwt" is just the name we chose for the cookie.
   res.cookie("jwt", token, cookieOptions);
 
-  // Step 4 - hide the password before sending the user back.
-  // undefined means "there is nothing here", so it does not go
-  // out in the reply. Note: we only changed the copy in memory,
-  // we did NOT save, so the real password in the database is
-  // untouched.
-  user.password = undefined;
+  const safeUser = user.toObject ? user.toObject() : { ...user };
+  delete safeUser.password;
+  delete safeUser.passwordConfirm;
+  delete safeUser.passwordResetToken;
+  delete safeUser.passwordResetExpires;
 
-  // Step 5 - send everything back to the browser.
-  // We send the token in the reply AND in the cookie, so that
-  // both a browser and a tool like Postman can work with it.
   res.status(statusCode).json({
     status: "Success",
     token,
-    user,
+    user: safeUser,
   });
 };
 
