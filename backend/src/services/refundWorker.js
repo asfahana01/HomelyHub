@@ -1,4 +1,5 @@
 import { runRefundWorkerOnce } from "./refundService.js";
+import { logger } from "../utils/logger.js";
 
 const DEFAULT_INTERVAL_MS = 60 * 1000;
 let workerInstance;
@@ -18,10 +19,9 @@ export const createRefundWorker = ({
     try {
       await runOnce();
     } catch (error) {
-      console.error(
-        "Refund reconciliation worker cycle failed:",
-        error instanceof Error ? error.message : "Unknown error"
-      );
+      logger.error("payment.refund_worker_cycle_failed", {
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
     } finally {
       running = false;
     }

@@ -1,4 +1,5 @@
 import { generateDescription } from "../ai/generateDescription.js";
+import { logger } from "../utils/logger.js";
 
 const generatePropertyDescription = async (req, res) => {
   try {
@@ -27,7 +28,17 @@ const generatePropertyDescription = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("AI DESCRIPTION ERROR:", error);
+    const outputRejected =
+      error.name === "ZodError" || error instanceof SyntaxError;
+    logger[outputRejected ? "warn" : "error"](
+      outputRejected
+        ? "security.ai.output_rejected"
+        : "ai.description_generation_failed",
+      {
+        requestId: req.requestId,
+        errorName: error.name || "Error",
+      }
+    );
 
     res.status(500).json({
       status: "fail",

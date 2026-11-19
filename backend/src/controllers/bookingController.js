@@ -19,6 +19,8 @@ import {
   markWebhookEventFailed,
   markWebhookEventProcessed,
 } from "../services/webhookEventService.js";
+import { parseRazorpayWebhookEvent } from "../utils/validation.js";
+import { logger } from "../utils/logger.js";
 
 // Helper: Calculate nights between two dates
 const calculateNights = (fromDate, toDate) => {
@@ -140,7 +142,10 @@ const createOrder = async (req, res) => {
         { _id: pendingBooking._id },
         { $set: { paymentStatus: "cancelled" } }
       );
-      console.error("Razorpay order creation failed:", rzpErr);
+      logger.error("payment.order_creation_failed", {
+        requestId: req.requestId,
+        errorName: rzpErr.name || "Error",
+      });
       return res.status(502).json({
         success: false,
         message: "Unable to initiate payment with payment gateway. Please try again later.",
@@ -156,10 +161,10 @@ const createOrder = async (req, res) => {
         throw new Error("Pending booking disappeared before order linkage.");
       }
     } catch (persistenceError) {
-      console.error(
-        `Razorpay order ${razorpayOrder.id} was created but could not be linked to booking ${pendingBooking._id}.`,
-        persistenceError
-      );
+      logger.error("payment.order_link_failed", {
+        requestId: req.requestId,
+        errorName: persistenceError.name || "Error",
+      });
       return res.status(503).json({
         success: false,
         message:
@@ -180,7 +185,10 @@ const createOrder = async (req, res) => {
       calculatedPrice,
     });
   } catch (error) {
-    console.error("createOrder error:", error);
+    logger.error("payment.order_request_failed", {
+      requestId: req.requestId,
+      errorName: error.name || "Error",
+    });
     res.status(500).json({
       success: false,
       message: "Failed to create booking order",
@@ -207,6 +215,9 @@ const verifyPayment = async (req, res) => {
     });
 
     if (!isValidSignature) {
+      logger.warn("security.payment.signature_rejected", {
+        requestId: req.requestId,
+      });
       return res.status(400).json({
         success: false,
         message: "Payment verification failed: Invalid cryptographic signature.",
@@ -218,7 +229,10 @@ const verifyPayment = async (req, res) => {
     try {
       payment = await razorpay.payments.fetch(razorpay_payment_id);
     } catch (fetchErr) {
-      console.error("Razorpay payment fetch failed:", fetchErr.message);
+      logger.error("payment.gateway_fetch_failed", {
+        requestId: req.requestId,
+        errorName: fetchErr.name || "Error",
+      });
       return res.status(502).json({
         success: false,
         message: "Unable to verify payment with Razorpay. Please try again.",
@@ -234,9 +248,9 @@ const verifyPayment = async (req, res) => {
     });
 
     if (result.status === "refund_pending") {
-      console.error(
-        `Captured payment ${payment.id} could not be booked; refund recovery is pending.`
-      );
+      logger.error("payment.booking_confirmation_refund_pending", {
+        requestId: req.requestId,
+      });
       return res.status(409).json({
         success: false,
         message:
@@ -253,7 +267,10 @@ const verifyPayment = async (req, res) => {
       booking: result.booking,
     });
   } catch (error) {
-    console.error("verifyPayment error:", error);
+    logger.error("payment.verification_failed", {
+      requestId: req.requestId,
+      errorName: error.name || "Error",
+    });
     res.status(error.statusCode || 500).json({
       success: false,
       message:
@@ -277,7 +294,9 @@ const razorpayWebhook = async (req, res) => {
   }
 
   if (!verifyWebhookSignature({ rawBody, signature })) {
-    console.warn("Unauthorized webhook attempt rejected");
+    logger.warn("security.payment.webhook_signature_rejected", {
+      requestId: req.requestId,
+    });
     return res.status(400).json({
       status: "fail",
       message: "Invalid webhook signature",
@@ -294,6 +313,15 @@ const razorpayWebhook = async (req, res) => {
     });
   }
 
+  try {
+    event = parseRazorpayWebhookEvent(event);
+  } catch {
+    return res.status(400).json({
+      status: "fail",
+      message: "Invalid webhook payload",
+    });
+  }
+
   const eventType = event.event;
   const eventId =
     req.headers["x-razorpay-event-id"] ||
@@ -303,7 +331,10 @@ const razorpayWebhook = async (req, res) => {
   try {
     claim = await claimWebhookEvent({ eventId, eventType });
   } catch (error) {
-    console.error("Webhook event claim failed:", error);
+    logger.error("payment.webhook_claim_failed", {
+      requestId: req.requestId,
+      errorName: error.name || "Error",
+    });
     return res.status(503).json({
       status: "error",
       message: "Webhook event could not be claimed",
@@ -344,10 +375,10 @@ const razorpayWebhook = async (req, res) => {
     return res.status(200).json({ status: "success" });
   } catch (error) {
     await markWebhookEventFailed(eventId, claimToken, error);
-    console.error(
-      `Webhook event ${eventId} processing failed:`,
-      error instanceof Error ? error.message : "Unknown error"
-    );
+    logger.error("payment.webhook_processing_failed", {
+      requestId: req.requestId,
+      errorName: error.name || "Error",
+    });
     return res.status(error.statusCode || 500).json({
       status: error.statusCode && error.statusCode < 500 ? "fail" : "error",
       message:
@@ -389,6 +420,9 @@ const getBookingDetails = async (req, res) => {
     });
 
     if (!booking) {
+      logger.warn("security.booking.access_denied", {
+        requestId: req.requestId,
+      });
       return res.status(404).json({
         status: "fail",
         message: "Booking not found",

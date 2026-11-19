@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import { Booking } from "../models/bookingModel.js";
 import { Property } from "../models/propertyModel.js";
 import { RefundTask } from "../models/refundTaskModel.js";
+import { logger } from "../utils/logger.js";
 
 export const CHECKOUT_HOLD_MS = 15 * 60 * 1000;
 
@@ -314,9 +315,7 @@ export const confirmBookingPayment = async (details) => {
         error?.message || ""
       )
     ) {
-      console.error(
-        "Payment confirmation refused because MongoDB transactions are unavailable. Replica-set deployment required."
-      );
+      logger.error("payment.transactions_unavailable", {});
       throw new BookingConfirmationError(
         "Payment confirmation is unavailable because MongoDB transactions are not supported. Please retry in a supported deployment.",
         503

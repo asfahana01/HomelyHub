@@ -7,11 +7,17 @@
 //    check                          - who is logged in?
 
 import { User } from "../models/userModel.js";
+import { AuthSession, RefreshToken } from "../models/authSessionModel.js";
 import jwt from "jsonwebtoken";
 import crypto from "node:crypto";
 import imagekit from "../utils/ImagekitIO.js";
 import { forgotPasswordMailGenContent, sendMail } from "../utils/mail.js";
+import { logger } from "../utils/logger.js";
 import {
+  hashRefreshToken,
+  refreshExpiry,
+  setAuthCookies,
+  signinToken,
   createSendToken,
   defaultAvatarUrl,
   filterObj,
@@ -30,12 +36,16 @@ const signup = async (req, res) => {
       avatar: { url: req.body.avatar || defaultAvatarUrl(req.body.name) },
       role: "user", // strictly enforce role to normal user
     });
-    createSendToken(newUser, 201, res);
+    await createSendToken(newUser, 201, res);
   } catch (error) {
     const duplicatedField = Object.keys(error.keyPattern || {})[0];
+    logger.warn("security.auth.signup_failed", {
+      requestId: req.requestId,
+      errorName: error.name || "Error",
+    });
     const message = duplicatedField
       ? `An account with that ${duplicatedField} already exists`
-      : error.message;
+      : "Could not create account. Please try again.";
 
     res.status(400).json({ status: "fail", message });
   }
@@ -68,10 +78,19 @@ const login = async (req, res) => {
       throw new Error("Incorrect email or password");
     }
     // Correct. 200 = ok. Token goes back in a cookie.
-    createSendToken(user, 200, res);
+    await createSendToken(user, 200, res);
   } catch (error) {
-    // 401 = 'I do not know who you are'
-    res.status(401).json({ status: "fail", message: error.message });
+    const invalidCredentials = error.message === "Incorrect email or password";
+    logger.warn("security.auth.login_failed", {
+      requestId: req.requestId,
+      errorName: error.name || "Error",
+    });
+    res.status(invalidCredentials ? 401 : 500).json({
+      status: invalidCredentials ? "fail" : "error",
+      message: invalidCredentials
+        ? "Incorrect email or password"
+        : "An unexpected error occurred. Please try again later.",
+    });
   }
 };
 
@@ -80,33 +99,71 @@ const login = async (req, res) => {
 // A token cannot be cancelled, and we cannot reach into the
 // user's browser. So we send a NEW cookie with the same name
 // that is already expired. The browser deletes it at once.
-const logout = (req, res) => {
-  const cookieOptions = {
-    // new Date(0) is 1 Jan 1970 - already past, so it dies now
-    expires: new Date(0),
+const revokeSession = async (sessionId) => {
+  if (!sessionId) return;
+  const revokedAt = new Date();
+  await Promise.all([
+    AuthSession.updateOne(
+      { sessionId, revokedAt: null },
+      { $set: { revokedAt } }
+    ),
+    RefreshToken.updateMany(
+      { sessionId, revokedAt: null },
+      { $set: { revokedAt } }
+    ),
+  ]);
+};
+
+const clearAuthCookies = (res) => {
+  const options = {
     httpOnly: true,
-    path: "/",
+    sameSite: "strict",
+    secure: process.env.NODE_ENV === "production",
+    path: "/api/v1/rent/user",
   };
+  res.clearCookie("jwt", options);
+  res.clearCookie("refreshToken", options);
+};
 
-  // These settings must match the login cookie exactly,
-  // otherwise the browser thinks it is a different cookie
-  // and the real one stays alive.
-  if (process.env.NODE_ENV === "production") {
-    cookieOptions.sameSite = "none";
-    cookieOptions.secure = true;
-  } else {
-    cookieOptions.sameSite = "lax";
-    cookieOptions.secure = false;
+const logout = async (req, res, next) => {
+  try {
+    let sessionId;
+    const refreshToken = req.signedCookies?.refreshToken;
+    if (typeof refreshToken === "string") {
+      const storedToken = await RefreshToken.findOne({
+        tokenHash: hashRefreshToken(refreshToken),
+      }).select("sessionId");
+      sessionId = storedToken?.sessionId;
+    }
+
+    const accessToken =
+      typeof req.signedCookies?.jwt === "string"
+        ? req.signedCookies.jwt
+        : req.headers.authorization?.startsWith("Bearer ")
+          ? req.headers.authorization.split(" ")[1]
+          : undefined;
+    if (!sessionId && accessToken) {
+      try {
+        const decoded = jwt.verify(
+          accessToken,
+          process.env.JWT_SECRET,
+          { ignoreExpiration: true }
+        );
+        sessionId = decoded.sid;
+      } catch {
+        sessionId = undefined;
+      }
+    }
+
+    await revokeSession(sessionId);
+    clearAuthCookies(res);
+    res.status(200).json({
+      status: "success",
+      message: "Logged out successfully",
+    });
+  } catch (error) {
+    next(error);
   }
-
-  // Same name 'jwt', so it overwrites the real one.
-  // The word 'loggedout' is a marker - protect ignores it.
-  res.cookie("jwt", "loggedout", cookieOptions);
-
-  res.status(200).json({
-    status: "success",
-    message: "Logged out successfully",
-  });
 };
 
 // 4. PROTECT - authentication verification middleware
@@ -119,8 +176,8 @@ const protect = async (req, res, next) => {
       req.headers.authorization.startsWith("Bearer")
     ) {
       token = req.headers.authorization.split(" ")[1];
-    } else if (req.cookies.jwt && req.cookies.jwt !== "loggedout") {
-      token = req.cookies.jwt;
+    } else if (typeof req.signedCookies?.jwt === "string") {
+      token = req.signedCookies.jwt;
     }
 
     if (!token) {
@@ -168,13 +225,136 @@ const protect = async (req, res, next) => {
       });
     }
 
+    if (!decoded.sid) {
+      return res.status(401).json({
+        status: "fail",
+        message: "Your session is no longer valid. Please log in again.",
+      });
+    }
+    const session = await AuthSession.findOne({
+      sessionId: decoded.sid,
+      user: currentUser._id,
+      revokedAt: null,
+      expiresAt: { $gt: new Date() },
+    }).select("_id");
+    if (!session) {
+      return res.status(401).json({
+        status: "fail",
+        message: "Your session is no longer valid. Please log in again.",
+      });
+    }
+
     req.user = currentUser;
     next();
   } catch (error) {
-    res.status(401).json({
-      status: "fail",
-      message: error.message || "Authentication failed",
+    next(error);
+  }
+};
+
+const refreshAccessToken = async (req, res, next) => {
+  try {
+    const rawToken = req.signedCookies?.refreshToken;
+    if (typeof rawToken !== "string") {
+      clearAuthCookies(res);
+      return res.status(401).json({
+        status: "fail",
+        message: "Refresh token is invalid or expired",
+      });
+    }
+
+    const storedToken = await RefreshToken.findOne({
+      tokenHash: hashRefreshToken(rawToken),
     });
+    if (!storedToken) {
+      clearAuthCookies(res);
+      return res.status(401).json({
+        status: "fail",
+        message: "Refresh token is invalid or expired",
+      });
+    }
+
+    if (storedToken.consumedAt || storedToken.revokedAt) {
+      if (storedToken.consumedAt) await revokeSession(storedToken.sessionId);
+      clearAuthCookies(res);
+      return res.status(401).json({
+        status: "fail",
+        message: "Refresh token is invalid or expired",
+      });
+    }
+
+    const now = new Date();
+    const session = await AuthSession.findOne({
+      sessionId: storedToken.sessionId,
+      user: storedToken.user,
+      revokedAt: null,
+      expiresAt: { $gt: now },
+    });
+    const user = session ? await User.findById(storedToken.user) : null;
+    if (!session || !user) {
+      await revokeSession(storedToken.sessionId);
+      clearAuthCookies(res);
+      return res.status(401).json({
+        status: "fail",
+        message: "Refresh token is invalid or expired",
+      });
+    }
+    if (
+      user.passwordChangedAt &&
+      user.passwordChangedAt.getTime() > session.createdAt.getTime()
+    ) {
+      await revokeSession(storedToken.sessionId);
+      clearAuthCookies(res);
+      return res.status(401).json({
+        status: "fail",
+        message: "Your session is no longer valid. Please log in again.",
+      });
+    }
+
+    const nextRawToken = crypto.randomBytes(32).toString("base64url");
+    const nextTokenHash = hashRefreshToken(nextRawToken);
+    const nextExpiresAt = refreshExpiry();
+    const consumed = await RefreshToken.findOneAndUpdate(
+      {
+        _id: storedToken._id,
+        consumedAt: null,
+        revokedAt: null,
+        expiresAt: { $gt: now },
+      },
+      { $set: { consumedAt: now, replacedByHash: nextTokenHash } },
+      { new: true }
+    );
+    if (!consumed) {
+      await revokeSession(storedToken.sessionId);
+      clearAuthCookies(res);
+      return res.status(401).json({
+        status: "fail",
+        message: "Refresh token is invalid or expired",
+      });
+    }
+
+    try {
+      await RefreshToken.create({
+        sessionId: storedToken.sessionId,
+        user: storedToken.user,
+        tokenHash: nextTokenHash,
+        expiresAt: nextExpiresAt,
+      });
+      session.expiresAt = nextExpiresAt;
+      await session.save();
+    } catch (error) {
+      await revokeSession(storedToken.sessionId);
+      throw error;
+    }
+
+    setAuthCookies(
+      res,
+      signinToken(user._id, storedToken.sessionId),
+      nextRawToken,
+      nextExpiresAt
+    );
+    return res.status(200).json({ status: "Success", user });
+  } catch (error) {
+    next(error);
   }
 };
 
@@ -255,7 +435,7 @@ const updateMe = async (req, res) => {
   } catch (error) {
     res.status(400).json({
       status: "Fail",
-      message: error.message,
+      message: "Could not update profile. Please try again.",
     });
   }
 };
@@ -289,11 +469,22 @@ const updatePassword = async (req, res) => {
 
     // A fresh token, because the old one now counts as 'made
     // before the password change' and would be rejected.
-    createSendToken(user, 200, res);
+    await AuthSession.updateMany(
+      { user: user._id, revokedAt: null },
+      { $set: { revokedAt: new Date() } }
+    );
+    await RefreshToken.updateMany(
+      { user: user._id, revokedAt: null },
+      { $set: { revokedAt: new Date() } }
+    );
+    await createSendToken(user, 200, res);
   } catch (error) {
     res.status(error.statusCode || 400).json({
       status: "fail",
-      message: error.message,
+      message:
+        error.statusCode === 401
+          ? error.message
+          : "Could not update password. Please try again.",
     });
   }
 };
@@ -348,7 +539,10 @@ const forgotPassword = async (req, res) => {
 
     res.status(200).json(genericResponse);
   } catch (error) {
-    console.error("forgotPassword failed:", error);
+    logger.error("auth.forgot_password_failed", {
+      requestId: req.requestId,
+      errorName: error.name || "Error",
+    });
     res.status(500).json({
       status: "fail",
       message: "Could not send the reset email, please try again later",
@@ -392,11 +586,19 @@ const resetPassword = async (req, res) => {
     await user.save();
 
     // Log him in straight away with a new token
-    createSendToken(user, 200, res);
+    await AuthSession.updateMany(
+      { user: user._id, revokedAt: null },
+      { $set: { revokedAt: new Date() } }
+    );
+    await RefreshToken.updateMany(
+      { user: user._id, revokedAt: null },
+      { $set: { revokedAt: new Date() } }
+    );
+    await createSendToken(user, 200, res);
   } catch (error) {
     res.status(400).json({
       status: "fail",
-      error: error.message,
+      error: "Token is invalid or expired",
     });
   }
 };
@@ -428,6 +630,7 @@ export {
   signup,
   login,
   logout,
+  refreshAccessToken,
   protect,
   restrictTo,
   updateMe,

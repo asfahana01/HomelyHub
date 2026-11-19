@@ -5,6 +5,7 @@
 import { text } from "express";
 import Mailgen from "mailgen";
 import nodemailer from "nodemailer";
+import { logger } from "./logger.js";
 
 
 // options = { email, subject, mailGenContent }
@@ -50,7 +51,9 @@ const sendMail = async (options) => {
   try {
     await transporter.sendMail(mail);
   } catch (error) {
-    console.error("Email Failed", error);
+    logger.error("email.send_failed", {
+      errorName: error.name || "Error",
+    });
     throw error;
   }
 };

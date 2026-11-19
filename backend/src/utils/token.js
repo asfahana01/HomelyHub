@@ -1,79 +1,82 @@
-// ============================================================
-//  token.js  -  the small helpers used by login and signup
-// ============================================================
-//
-//  1. signinToken
-//     After you log in, the server must remember you. But the
-//     server does NOT keep a list of who is logged in. Instead
-//     it gives you a token - like a movie ticket. The ticket
-//     has your id written on it, and it is signed with a secret
-//     only the server knows. Next time you come, you show the
-//     ticket, the server checks the signature, and knows it is
-//     really you. A fake ticket fails the check.
-//
-//  2. createSendToken
-//     Making the ticket is not enough - we must hand it over.
-//     This does the full job: make the token, put it in a
-//     cookie, hide the password, and send the reply. Signup,
-//     login, update-password and reset-password ALL end the
-//     same way, so instead of writing those 15 lines four
-//     times, we write them once here.
-//
-//  3. defaultAvatarUrl
-//     A new user has no profile photo. Rather than show an
-//     empty grey box, we use a free website that draws a circle
-//     with the first letters of their name in it.
-//
-//  4. filterObj
-//     When a user updates their profile, we must NOT trust
-//     whatever the browser sends. If we did, someone could send
-//     role: "admin" and make themselves an admin. So we keep
-//     only the fields we allow and throw the rest away.
-//     Rule to remember: never trust req.body directly.
-//
-// ============================================================
-
-// jsonwebtoken is the library that makes and checks the ticket.
+import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
+import { AuthSession, RefreshToken } from "../models/authSessionModel.js";
 
+const USER_API_PATH = "/api/v1/rent/user";
 
-// ------------------------------------------------------------
-// 1. MAKE THE TOKEN
-// ------------------------------------------------------------
-// (id) => the user's database id. That is all we put inside.
-// We never put the password or email in a token, because
-// anyone holding a token can read what is inside it. It cannot
-// be CHANGED without the secret, but it CAN be read.
-const signinToken = (id) => {
+const durationToMs = (value) => {
+  const match = /^(\d+)([smhd])$/.exec(value);
+  if (!match) {
+    throw new Error("JWT_ACCESS_EXPIRES_IN must be a duration such as 15m");
+  }
+  const unitMs = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+  const duration = Number(match[1]) * unitMs[match[2]];
+  if (duration < 1000 || duration > 60 * 60 * 1000) {
+    throw new Error("JWT access-token lifetime must be between 1 second and 1 hour");
+  }
+  return duration;
+};
+
+const refreshExpiry = () => {
+  const days = Number(process.env.JWT_REFRESH_EXPIRES_DAYS || 30);
+  if (!Number.isInteger(days) || days < 1 || days > 90) {
+    throw new Error("JWT_REFRESH_EXPIRES_DAYS must be between 1 and 90");
+  }
+  return new Date(Date.now() + days * 86_400_000);
+};
+
+const hashRefreshToken = (token) =>
+  crypto.createHash("sha256").update(token).digest("hex");
+
+const signinToken = (id, sessionId) => {
   if (!process.env.JWT_SECRET) {
     throw new Error("JWT_SECRET is not configured in environment variables");
   }
-  return jwt.sign({ id }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES_IN || "7d",
+  return jwt.sign({ id, sid: sessionId }, process.env.JWT_SECRET, {
+    expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "15m",
+    jwtid: crypto.randomUUID(),
   });
 };
 
+const cookieOptions = (expires) => ({
+  expires,
+  httpOnly: true,
+  sameSite: "strict",
+  secure: process.env.NODE_ENV === "production",
+  path: USER_API_PATH,
+});
 
-// ------------------------------------------------------------
-// 2. MAKE THE TOKEN, PUT IT IN A COOKIE, SEND THE REPLY
-// ------------------------------------------------------------
-const createSendToken = (user, statusCode, res) => {
-  const token = signinToken(user._id);
-  const cookieExpiresDays = Number(process.env.JWT_COOKIE_EXPIRES_IN) || 7;
-  const isProduction = process.env.NODE_ENV === "production";
+const setAuthCookies = (res, accessToken, refreshToken, refreshExpiresAt) => {
+  const accessExpiry = new Date(
+    Date.now() + durationToMs(process.env.JWT_ACCESS_EXPIRES_IN || "15m")
+  );
+  res.cookie("jwt", accessToken, {
+    ...cookieOptions(accessExpiry),
+    signed: true,
+  });
+  res.cookie("refreshToken", refreshToken, {
+    ...cookieOptions(refreshExpiresAt),
+    signed: true,
+  });
+};
 
-  const cookieOptions = {
-    expires: new Date(
-      Date.now() + cookieExpiresDays * 24 * 60 * 60 * 1000
-    ),
-    httpOnly: true,
-    sameSite: isProduction ? "none" : "lax",
-    secure: isProduction,
-    path: "/",
-  };
+const createSendToken = async (user, statusCode, res) => {
+  const sessionId = crypto.randomUUID();
+  const refreshToken = crypto.randomBytes(32).toString("base64url");
+  const expiresAt = refreshExpiry();
+  await AuthSession.create({
+    sessionId,
+    user: user._id,
+    expiresAt,
+  });
+  await RefreshToken.create({
+    sessionId,
+    user: user._id,
+    tokenHash: hashRefreshToken(refreshToken),
+    expiresAt,
+  });
 
-  res.cookie("jwt", token, cookieOptions);
-
+  setAuthCookies(res, signinToken(user._id, sessionId), refreshToken, expiresAt);
   const safeUser = user.toObject ? user.toObject() : { ...user };
   delete safeUser.password;
   delete safeUser.passwordConfirm;
@@ -82,57 +85,31 @@ const createSendToken = (user, statusCode, res) => {
 
   res.status(statusCode).json({
     status: "Success",
-    token,
     user: safeUser,
   });
 };
 
-
-// ------------------------------------------------------------
-// 3. A READY-MADE PROFILE PICTURE
-// ------------------------------------------------------------
-// Builds a web address that draws a circle with the person's
-// initials. Nothing is uploaded and nothing is stored - the
-// picture is made by that website from the address itself.
 const defaultAvatarUrl = (name) =>
   "https://ui-avatars.com/api/?name=" +
-  // encodeURIComponent makes the name safe for a web address.
-  // A space is not allowed in a url, so "Rohit Kumar" becomes
-  // "Rohit%20Kumar". Without this the address would break.
-  // (name || "User") means: if there is no name, use "User".
   encodeURIComponent(name || "User") +
-  // background = circle colour, color = text colour,
-  // size = 256 pixels, bold = thick letters.
   "&background=0e8b53&color=fff&size=256&bold=true";
 
-
-// ------------------------------------------------------------
-// 4. KEEP ONLY THE ALLOWED FIELDS
-// ------------------------------------------------------------
-// obj             -> what the browser sent us (req.body)
-// ...allowedFeilds -> the names we agree to accept.
-// The three dots collect every extra argument into a list. So
-// filterObj(req.body, "name", "phoneNumber") gives us
-// allowedFeilds = ["name", "phoneNumber"].
-const filterObj = (obj, ...allowedFeilds) => {
-  // Start with an empty box.
-  let newObj = {};
-
-  // Object.keys(obj) gives the list of field NAMES that came in,
-  // for example ["name", "email", "role"].
-  // forEach runs the code once for each name. el is one name.
-  Object.keys(obj).forEach((el) => {
-    // Is this name in our allowed list?
-    // If yes, copy that one field into the new box.
-    // If no, we simply ignore it - so "role" never gets through.
-    if (allowedFeilds.includes(el)) newObj[el] = obj[el];
+const filterObj = (obj, ...allowedFields) => {
+  const filtered = {};
+  Object.keys(obj).forEach((key) => {
+    if (allowedFields.includes(key)) filtered[key] = obj[key];
   });
-
-  // Hand back the clean box. Only safe fields are inside.
-  return newObj;
+  return filtered;
 };
 
-
-// Send all four out so authController.js can import them.
-// The names inside the braces must match exactly when imported.
-export { signinToken, createSendToken, defaultAvatarUrl, filterObj };
+export {
+  AuthSession,
+  RefreshToken,
+  createSendToken,
+  defaultAvatarUrl,
+  filterObj,
+  hashRefreshToken,
+  refreshExpiry,
+  setAuthCookies,
+  signinToken,
+};

@@ -1,5 +1,6 @@
 import { Property } from "../models/propertyModel.js";
 import { planTrip } from "../ai/tripPlanner.js";
+import { logger } from "../utils/logger.js";
 
 const cleanCity = (text) =>
   String(text || "")
@@ -84,7 +85,17 @@ const createTripPlan = async (req, res) => {
       data: { plan, properties, perNight },
     });
   } catch (error) {
-    console.error("TRIP PLANNER ERROR:", error);
+    const outputRejected =
+      error.name === "ZodError" || error instanceof SyntaxError;
+    logger[outputRejected ? "warn" : "error"](
+      outputRejected
+        ? "security.ai.output_rejected"
+        : "ai.trip_generation_failed",
+      {
+        requestId: req.requestId,
+        errorName: error.name || "Error",
+      }
+    );
     res.status(500).json({
       status: "fail",
       message: "An error occurred while creating the trip plan. Please try again later.",

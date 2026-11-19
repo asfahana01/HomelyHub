@@ -2,11 +2,11 @@ import { Property } from "../models/propertyModel.js";
 import { Booking } from "../models/bookingModel.js";
 import { APIFeatures } from "../utils/APIFeatures.js";
 import imagekit from "../utils/ImagekitIO.js";
+import { logger } from "../utils/logger.js";
 
 // Helper for admin audit logging (no sensitive secrets logged)
 const auditLog = (action, details) => {
-  const timestamp = new Date().toISOString();
-  console.log(`[AUDIT LOG] ${timestamp} | ACTION: ${action} | DETAILS:`, JSON.stringify(details));
+  logger.info("audit.property_action", { action, ...details });
 };
 
 // 1. GET ALL PROPERTIES - Public browsing with filtering, searching, and pagination
@@ -30,7 +30,10 @@ const getProperties = async (req, res) => {
       data: doc,
     });
   } catch (error) {
-    console.error("Error searching properties: ", error);
+    logger.error("property.search_failed", {
+      requestId: req.requestId,
+      errorName: error.name || "Error",
+    });
     res.status(500).json({ status: "error", message: "Failed to retrieve properties" });
   }
 };
@@ -160,13 +163,18 @@ const createProperty = async (req, res) => {
     auditLog("PROPERTY_CREATED", {
       adminId: req.user._id,
       propertyId: property._id,
-      propertyName: property.propertyName,
     });
 
     res.status(201).json({ status: "success", data: { data: property } });
   } catch (error) {
-    console.error("Error creating property:", error);
-    res.status(400).json({ status: "fail", message: error.message });
+    logger.error("property.create_failed", {
+      requestId: req.requestId,
+      errorName: error.name || "Error",
+    });
+    res.status(400).json({
+      status: "fail",
+      message: "Could not create property. Please check the submitted details.",
+    });
   }
 };
 
@@ -230,7 +238,7 @@ const updateProperty = async (req, res) => {
   } catch (error) {
     res.status(400).json({
       status: "fail",
-      message: error.message,
+      message: "Could not update property. Please check the submitted details.",
     });
   }
 };
@@ -289,6 +297,10 @@ const deleteProperty = async (req, res) => {
       message: "Property listing successfully archived and removed from public listings.",
     });
   } catch (error) {
+    logger.error("property.archive_failed", {
+      requestId: req.requestId,
+      errorName: error.name || "Error",
+    });
     res.status(500).json({
       status: "fail",
       message: "Failed to delete or archive property",
@@ -308,7 +320,14 @@ const getUsersProperties = async (req, res) => {
       data: properties,
     });
   } catch (error) {
-    res.status(404).json({ status: "fail", message: error.message });
+    logger.error("property.admin_list_failed", {
+      requestId: req.requestId,
+      errorName: error.name || "Error",
+    });
+    res.status(500).json({
+      status: "fail",
+      message: "Failed to retrieve properties",
+    });
   }
 };
 

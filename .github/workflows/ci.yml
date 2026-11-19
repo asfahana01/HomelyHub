@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+      - name: Install backend dependencies
+        run: npm ci --prefix backend
+      - name: Check environment example
+        run: npm run check:env --prefix backend
+      - name: Check backend JavaScript syntax
+        run: npm run check:syntax --prefix backend
+      - name: Run backend tests
+        run: npm test --prefix backend
+        env:
+          NODE_ENV: test
+      - name: Enforce backend coverage
+        run: npm run test:coverage --prefix backend
+        env:
+          NODE_ENV: test
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+      - name: Lint frontend
+        working-directory: frontend
+        run: npx eslint src/utils/axios.js src/store/User/user-action.js
+      - name: Build frontend
+        run: npm run build --prefix frontend

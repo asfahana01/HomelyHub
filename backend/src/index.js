@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
+import mongoose from "mongoose";
 import connectDB from "./utils/db.js";
 import { router } from "./routes/userRoutes.js";
 import { propertyRouter } from "./routes/propertyRouter.js";
@@ -10,10 +11,23 @@ import { bookingRouter } from "./routes/bookingRouter.js";
 import { tripRouter } from "./routes/tripRouter.js";
 import { generalLimiter, sanitizeNoSql } from "./utils/security.js";
 import { startBackend } from "./utils/startup.js";
+import { AppError } from "./utils/AppError.js";
+import { logger, requestIdMiddleware } from "./utils/logger.js";
+import { getEnvironmentIssues } from "./utils/env.js";
 
 dotenv.config();
 
+const envIssues =
+  process.env.NODE_ENV === "test" ? [] : getEnvironmentIssues();
+if (envIssues.length) {
+  logger.error("config.validation_failed", { variables: envIssues });
+  throw new Error(
+    `Missing or invalid required environment variables: ${envIssues.join(", ")}`
+  );
+}
+
 const app = express();
+app.use(requestIdMiddleware);
 
 // 1. HTTP Security Headers
 app.use(
@@ -71,7 +85,7 @@ app.use(
 app.use(express.urlencoded({ limit: "1mb", extended: true }));
 
 // 4. Cookie parser
-app.use(cookieParser());
+app.use(cookieParser(process.env.COOKIE_SECRET || process.env.JWT_SECRET));
 
 // 5. NoSQL Injection protection
 app.use(sanitizeNoSql);
@@ -80,6 +94,40 @@ app.use(sanitizeNoSql);
 app.use("/api", generalLimiter);
 
 const PORT = process.env.PORT || 3000;
+
+app.get("/health", (_req, res) => {
+  res.status(200).json({ status: "ok" });
+});
+
+app.get("/ready", (_req, res) => {
+  const checks = {
+    database: mongoose.connection.readyState === 1 ? "ready" : "not_ready",
+    razorpay:
+      process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET
+        ? "configured"
+        : "not_configured",
+    ai: process.env.GROQ_API_KEY ? "configured" : "not_configured",
+    imageStorage:
+      process.env.IMAGE_PUBLICKEY &&
+      process.env.IMAGE_PRIVATEKEY &&
+      process.env.IMAGEKIT_URLENDPOINT
+        ? "configured"
+        : "not_configured",
+    email:
+      process.env.MAILTRAP_SMTP_HOST &&
+      process.env.MAILTRAP_SMTP_USER &&
+      process.env.MAILTRAP_SMTP_PASS
+        ? "configured"
+        : "not_configured",
+  };
+  const ready = Object.values(checks).every(
+    (status) => status === "ready" || status === "configured"
+  );
+  res.status(ready ? 200 : 503).json({
+    status: ready ? "ready" : "not_ready",
+    checks,
+  });
+});
 
 // Health check endpoint
 app.get("/", (req, res) => {
@@ -104,19 +152,19 @@ app.all("/{*splat}", (req, res) => {
 app.use((err, req, res, next) => {
   const statusCode = err.statusCode || 500;
   const status = err.status || (statusCode >= 500 ? "error" : "fail");
-
-  if (process.env.NODE_ENV !== "production") {
-    console.error("Centralized Error:", err);
-  }
-
-  const message =
-    process.env.NODE_ENV === "production" && statusCode === 500
-      ? "An unexpected error occurred. Please try again later."
-      : err.message || "Internal Server Error";
-
+  const operational = err instanceof AppError || err.isOperational === true;
+  logger.error("http.error", {
+    requestId: req.requestId,
+    statusCode,
+    errorName: err.name || "Error",
+  });
   res.status(statusCode).json({
     status,
-    message,
+    message:
+      operational && statusCode < 500
+        ? err.message
+        : "An unexpected error occurred. Please try again later.",
+    requestId: req.requestId,
   });
 });
 
@@ -131,14 +179,13 @@ if (process.env.NODE_ENV !== "test") {
     },
     listen: () =>
       app.listen(PORT, () => {
-        console.log(`Server is running on port ${PORT}`);
+        logger.info("backend.server_listening", { port: Number(PORT) });
       }),
   })
     .catch((error) => {
-      console.error(
-        "Backend startup failed:",
-        error instanceof Error ? error.message : "Unknown error"
-      );
+        logger.error("backend.startup_failed", {
+          errorName: error instanceof Error ? error.name : "UnknownError",
+        });
       process.exitCode = 1;
     });
 }

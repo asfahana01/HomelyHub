@@ -2,6 +2,7 @@ import { RefundTask } from "../models/refundTaskModel.js";
 import { Booking } from "../models/bookingModel.js";
 import { getRazorpayInstance } from "../utils/razorpay.js";
 import crypto from "node:crypto";
+import { logger } from "../utils/logger.js";
 
 export const REFUND_LEASE_MS = 2 * 60 * 1000;
 
@@ -260,9 +261,9 @@ export const processRefundTask = async (
     if (!update.matchedCount) {
       return { status: "stale" };
     }
-    console.error(
-      `Refund task ${task._id} failed for payment ${task.paymentId}: ${message}`
-    );
+    logger.error("payment.refund_task_failed", {
+      errorName: error.name || "Error",
+    });
     return { status: "failed", error: message };
   }
 };
