@@ -1,96 +1,66 @@
-# HomelyHub — Static Frontend
+# HomelyHub frontend
 
-This is the **static version** of the HomelyHub frontend.
+The frontend is a React 18 single-page app built with Vite. It uses React Router for navigation, Redux Toolkit and React Redux for shared application state, and a credentialed Axios client for the backend API.
 
-It is a copy of `frontend/` with **all Redux Toolkit logic removed**.
-Nothing else was changed — every component, className, CSS file, JSX
-structure, route and dependency is exactly the same as the original.
+## Run and build
 
-## Run it
+From this directory:
 
 ```bash
 npm install
 npm run dev
+npm run build
+npm run preview
+npm run lint
 ```
 
-## What was removed
+The dev server proxies `/api` requests to `http://localhost:3000` (see [`vite.config.js`](vite.config.js)). The Axios client uses `/api` as its base URL. Configure the backend and any environment-specific settings to match your local deployment. The package defines no frontend test script.
 
-| Removed | Replaced with |
+The dependency set also includes Ant Design, TanStack React Form, GSAP, Leaflet/React Leaflet, date pickers, toast notifications, and Lucide icons. Browser-global Bootstrap, Google Fonts/Material Icons, and Font Awesome styles are linked from [`index.html`](index.html).
+
+## Application structure
+
+- [`src/`](src/README.md) contains the app entry, routes, UI, state, API utilities, and styles.
+- [`public/`](public/README.md) contains files served directly at the site root.
+- [`package.json`](package.json) defines scripts and dependencies.
+- [`package-lock.json`](package-lock.json) locks the npm dependency tree.
+- [`index.html`](index.html) supplies the root element and external fonts/icons/stylesheets.
+- [`vite.config.js`](vite.config.js) configures React and the local API proxy.
+- [`eslint.config.js`](eslint.config.js) defines the flat ESLint configuration.
+
+The root project documentation is [../README.md](../README.md).
+
+## Routes
+
+Routes are declared in [`src/App.jsx`](src/App.jsx) beneath the shared `Main` layout. `/editprofile`, `/user/updatepassword`, `/user/mybookings`, `/user/mybookings/:bookingId`, and `/payment/:propertyId` redirect to `/login` when there is no user in Redux state. Other routes, including profile and accommodation routes, are rendered without that route-level check.
+
+| Path | Page |
 | --- | --- |
-| `src/store/` (all slices + actions) | `src/data/staticData.js` — plain placeholder data |
-| `<Provider store={store}>` in `main.jsx` | nothing — the app renders directly |
-| `useSelector(...)` | `useState(STATIC_...)` inside each component |
-| `dispatch(someAction())` | a `// TODO: add your ... logic here` comment |
-| `@reduxjs/toolkit`, `react-redux` in `package.json` | removed from dependencies |
+| `/` | Property browsing (`PropertyList`) |
+| `/propertylist/:id` | Property details and booking form |
+| `/login`, `/signup` | Authentication |
+| `/profile`, `/editprofile` | Profile and profile editing |
+| `/ai-trip-planner` | AI trip planner |
+| `/accomodation`, `/accomodationform` | Host accommodations and listing form |
+| `/user/forgotPassword`, `/user/resetPassword/:token` | Password recovery |
+| `/user/updatepassword` | Authenticated password update |
+| `/user/mybookings`, `/user/mybookings/:bookingId` | Authenticated bookings |
+| `/payment/:propertyId` | Authenticated checkout |
+| `*` | Not-found page |
 
-## How to add your own logic
+## Backend and integrations
 
-Every place that used to talk to the store is marked with a comment.
-Search the project for:
+[`src/utils/axios.js`](src/utils/README.md) configures credentialed `/api` requests and retries a failed authenticated request after a shared refresh-token request. Redux action modules call `/v1/rent/...` endpoints through that client for authentication, listings, accommodations, bookings, and checkout. The property-description and trip-planning helpers also use it. Checkout loads Razorpay's hosted Checkout SDK in the browser; order creation and payment verification are backend API calls, not direct client-side payment verification.
 
-```
-TODO:
-```
+### Main frontend-to-backend flows
 
-There are two kinds of spots:
+| Feature | Frontend request flow |
+| --- | --- |
+| Account | `store/User/user-action.js` calls `/v1/rent/user/...` for signup, login, current-user lookup, profile/password updates, password recovery, and logout. The Axios client includes credentials and handles eligible 401 refreshes. |
+| Property discovery | `store/Property/property-action.js` GETs `/v1/rent/listing` with Redux search parameters; `PropertyDetails/propertyDetails-action.js` requests `/v1/rent/listing/:id`. The host listing view also DELETEs `/v1/rent/listing/:id`. |
+| Hosting | Accommodation actions POST `/v1/rent/user/newAccommodation` and GET `/v1/rent/user/myAccommodation`. `ai/aiDescription.js` POSTs description inputs to `/v1/rent/user/generateDescription`. |
+| Trips | `ai/tripPlanner.js` POSTs trip inputs to `/v1/rent/trip`. |
+| Booking | Booking actions GET `/v1/rent/user/booking` and `/v1/rent/user/booking/:bookingId`; cancellation POSTs to `/v1/rent/user/booking/:bookingId/cancel`. |
+| Payment | Payment actions POST to `/v1/rent/user/booking/create-order`, then `/v1/rent/user/booking/verify-payment` with the Razorpay order/payment/signature response. The client does not calculate the payable amount as authoritative or verify the signature itself. |
 
-**1. Reading data** — a `useState` seeded with placeholder data:
-
-```jsx
-// STATIC: was `useSelector((state) => state.properties)`.
-// TODO: replace with your own fetch logic.
-const [properties] = useState(STATIC_PROPERTIES);
-```
-
-Swap the initial value for your API/context result (add a setter if you need
-one). The data shape in `src/data/staticData.js` matches what the JSX below
-it expects, so the markup keeps working unchanged.
-
-**2. Writing data** — an empty handler:
-
-```jsx
-const submitHandler = (e) => {
-  e.preventDefault();
-  // TODO: add your login logic here.
-  console.log({ email, password });
-  ...
-};
-```
-
-Drop your call in place of the `console.log`. The payload objects the original
-app sent are still spelled out in the code (booking details, new accomodation,
-updated profile fields), so you can pass them straight to your API.
-
-`src/utils/axios.js` is untouched and still points at `VITE_API_BASE_URL`
-from `.env`, so you can start making requests right away.
-
-## Files that contain TODOs
-
-```
-src/App.jsx                                    current user
-src/components/home/Header.jsx                 auth state, logout, reset filters
-src/components/home/Search.jsx                 search
-src/components/home/Filter.jsx                 filters
-src/components/home/PropertyList.jsx           properties + pagination
-src/components/propertyListing/PropertyListing.jsx   property details
-src/components/propertyListing/PaymentForm.jsx       auth state, save booking
-src/components/payment/Payment.jsx             create order, verify payment
-src/components/user/Login.jsx                  login
-src/components/user/Signup.jsx                 signup
-src/components/user/Profile.jsx                current user
-src/components/user/EditProfile.jsx            current user, update profile
-src/components/user/UpdatePassword.jsx         update password
-src/components/user/ForgetPassword.jsx         forgot password
-src/components/user/ResetPassword.jsx          reset password
-src/components/accomodation/Accomodation.jsx       my accomodations
-src/components/accomodation/AccomodationForm.jsx   create accomodation
-src/components/myBookings/MyBookings.jsx       my bookings
-src/components/myBookings/BookingDetails.jsx   booking details
-```
-
-## Placeholder data
-
-`src/data/staticData.js` holds the sample user, properties, property details,
-bookings, accomodations and payment details. Set
-`STATIC_IS_AUTHENTICATED` to `false` there to preview the logged-out UI.
-Delete the file once your own data is wired in.
+See the [source overview](src/README.md) and its directory READMEs for action names and module details.
