@@ -105,6 +105,32 @@ const propertySchema = new mongoose.Schema(
         },
       },
     ],
+    bookingHolds: [
+      {
+        bookingId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Booking",
+          required: true,
+        },
+        fromDate: {
+          type: Date,
+          required: true,
+        },
+        toDate: {
+          type: Date,
+          required: true,
+        },
+        userId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
+          required: true,
+        },
+        expiresAt: {
+          type: Date,
+          required: true,
+        },
+      },
+    ],
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

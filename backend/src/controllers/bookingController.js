@@ -1,10 +1,19 @@
+import crypto from "node:crypto";
 import { Property } from "../models/propertyModel.js";
 import { Booking } from "../models/bookingModel.js";
+import { WebhookEvent } from "../models/webhookEventModel.js";
 import {
   getRazorpayInstance,
   verifyRazorpaySignature,
   verifyWebhookSignature,
 } from "../utils/razorpay.js";
+import {
+  CHECKOUT_HOLD_MS,
+  confirmBookingPayment,
+  markPaymentFailed,
+  releaseCheckoutHold,
+  reserveCheckoutHold,
+} from "../services/bookingConfirmationService.js";
 
 // Helper: Calculate nights between two dates
 const calculateNights = (fromDate, toDate) => {
@@ -72,29 +81,44 @@ const createOrder = async (req, res) => {
       });
     }
 
-    // 4. Check date availability against confirmed bookings
-    const isOverlapping = (property.currentBookings || []).some((booking) => {
-      const bFrom = new Date(booking.fromDate);
-      const bTo = new Date(booking.toDate);
-      return bFrom < checkout && bTo > checkin;
-    });
-
-    if (isOverlapping) {
-      return res.status(400).json({
-        success: false,
-        message: "Property is already booked for the selected dates.",
-      });
-    }
-
     // 5. Server-side price calculation (Never trust client-provided amount!)
     const calculatedPrice = nights * property.price;
     const amountInPaise = Math.round(calculatedPrice * 100);
 
-    // 6. Create Razorpay order
-    const razorpay = getRazorpayInstance();
-    let razorpayOrder;
+    // Create a booking-backed hold before asking Razorpay to create the order.
+    const holdExpiresAt = new Date(Date.now() + CHECKOUT_HOLD_MS);
+    const pendingBooking = await Booking.create({
+      user: req.user._id,
+      property: property._id,
+      price: calculatedPrice,
+      fromDate: checkin,
+      toDate: checkout,
+      guests: guestNum,
+      numberOfnights: nights,
+      paid: false,
+      paymentStatus: "pending",
+      holdExpiresAt,
+    });
 
+    let heldProperty;
     try {
+      heldProperty = await reserveCheckoutHold(pendingBooking, holdExpiresAt);
+    } catch (error) {
+      await Booking.deleteOne({ _id: pendingBooking._id });
+      throw error;
+    }
+
+    if (!heldProperty) {
+      await Booking.deleteOne({ _id: pendingBooking._id });
+      return res.status(409).json({
+        success: false,
+        message: "Property is already booked or held for the selected dates.",
+      });
+    }
+
+    let razorpayOrder;
+    try {
+      const razorpay = getRazorpayInstance();
       razorpayOrder = await razorpay.orders.create({
         amount: amountInPaise,
         currency: "INR",
@@ -106,6 +130,11 @@ const createOrder = async (req, res) => {
         },
       });
     } catch (rzpErr) {
+      await releaseCheckoutHold(pendingBooking);
+      await Booking.updateOne(
+        { _id: pendingBooking._id },
+        { $set: { paymentStatus: "cancelled" } }
+      );
       console.error("Razorpay order creation failed:", rzpErr);
       return res.status(502).json({
         success: false,
@@ -113,19 +142,25 @@ const createOrder = async (req, res) => {
       });
     }
 
-    // 7. Store pending booking in MongoDB
-    const pendingBooking = await Booking.create({
-      user: req.user._id,
-      property: property._id,
-      price: calculatedPrice,
-      fromDate: checkin,
-      toDate: checkout,
-      guests: guestNum,
-      numberOfnights: nights,
-      paid: false,
-      paymentStatus: "pending",
-      razorpayOrderId: razorpayOrder.id,
-    });
+    try {
+      const linkResult = await Booking.updateOne(
+        { _id: pendingBooking._id },
+        { $set: { razorpayOrderId: razorpayOrder.id } }
+      );
+      if (!linkResult.matchedCount) {
+        throw new Error("Pending booking disappeared before order linkage.");
+      }
+    } catch (persistenceError) {
+      console.error(
+        `Razorpay order ${razorpayOrder.id} was created but could not be linked to booking ${pendingBooking._id}.`,
+        persistenceError
+      );
+      return res.status(503).json({
+        success: false,
+        message:
+          "The payment order could not be linked to your booking. Please contact support before retrying.",
+      });
+    }
 
     res.status(201).json({
       success: true,
@@ -160,29 +195,6 @@ const verifyPayment = async (req, res) => {
       });
     }
 
-    // 1. Find pending booking by server-generated order ID and authenticated user
-    const booking = await Booking.findOne({
-      razorpayOrderId: razorpay_order_id,
-      user: req.user._id,
-    });
-
-    if (!booking) {
-      return res.status(404).json({
-        success: false,
-        message: "No matching booking found for this order and user.",
-      });
-    }
-
-    // 2. Idempotency check: if already confirmed/paid, return success
-    if (booking.paid && booking.paymentStatus === "paid") {
-      return res.status(200).json({
-        success: true,
-        message: "Payment already verified and booking is confirmed.",
-        booking,
-      });
-    }
-
-    // 3. Cryptographically verify signature using timing-safe comparison
     const isValidSignature = verifyRazorpaySignature({
       orderId: razorpay_order_id,
       paymentId: razorpay_payment_id,
@@ -190,114 +202,59 @@ const verifyPayment = async (req, res) => {
     });
 
     if (!isValidSignature) {
-      booking.paymentStatus = "failed";
-      await booking.save();
       return res.status(400).json({
         success: false,
         message: "Payment verification failed: Invalid cryptographic signature.",
       });
     }
 
-    
-// Fetch payment details directly from Razorpay
-const razorpay = getRazorpayInstance();
-
-let payment;
-
-try {
-  payment = await razorpay.payments.fetch(razorpay_payment_id);
-} catch (fetchErr) {
-  console.error("Razorpay payment fetch failed:", fetchErr.message);
-
-  return res.status(502).json({
-    success: false,
-    message: "Unable to verify payment with Razorpay. Please try again.",
-  });
-}
-
-// Verify payment belongs to the expected order
-if (payment.order_id !== razorpay_order_id) {
-  return res.status(400).json({
-    success: false,
-    message: "Payment does not belong to this order.",
-  });
-}
-
-// Only captured payments are treated as successful
-if (payment.status !== "captured") {
-  return res.status(400).json({
-    success: false,
-    message: "Payment has not been captured yet.",
-  });
-}
-
-// Verify exact amount and currency
-const expectedPaise = Math.round(booking.price * 100);
-
-if (
-  Number(payment.amount) !== expectedPaise ||
-  payment.currency !== "INR"
-) {
-  return res.status(400).json({
-    success: false,
-    message: "Payment amount or currency mismatch.",
-  });
-}
-
-
-    // 5. Atomic property booking date reservation to prevent race conditions
-    const updatedProperty = await Property.findOneAndUpdate(
-      {
-        _id: booking.property,
-        currentBookings: {
-          $not: {
-            $elemMatch: {
-              fromDate: { $lt: booking.toDate },
-              toDate: { $gt: booking.fromDate },
-            },
-          },
-        },
-      },
-      {
-        $push: {
-          currentBookings: {
-            bookingId: booking._id,
-            fromDate: booking.fromDate,
-            toDate: booking.toDate,
-            userId: req.user._id,
-          },
-        },
-      },
-      { new: true }
-    );
-
-    if (!updatedProperty) {
-      // Conflicting booking occurred during payment
-      booking.paymentStatus = "cancelled";
-      await booking.save();
-      return res.status(409).json({
+    const razorpay = getRazorpayInstance();
+    let payment;
+    try {
+      payment = await razorpay.payments.fetch(razorpay_payment_id);
+    } catch (fetchErr) {
+      console.error("Razorpay payment fetch failed:", fetchErr.message);
+      return res.status(502).json({
         success: false,
-        message: "The property was booked by another guest during payment. Please contact support for an immediate refund.",
+        message: "Unable to verify payment with Razorpay. Please try again.",
       });
     }
 
-    // 6. Mark booking as paid and confirmed
-    booking.paid = true;
-    booking.paymentStatus = "paid";
-    booking.razorpayPaymentId = razorpay_payment_id;
-    booking.razorpaySignature = razorpay_signature;
-    await booking.save();
+    const result = await confirmBookingPayment({
+      orderId: razorpay_order_id,
+      payment,
+      paymentId: razorpay_payment_id,
+      signature: razorpay_signature,
+      userId: req.user._id,
+    });
+
+    if (result.status === "refund_pending") {
+      console.error(
+        `Captured payment ${payment.id} could not be booked; refund recovery is pending.`
+      );
+      return res.status(409).json({
+        success: false,
+        message:
+          "Payment was captured, but the dates are no longer available. A refund is pending; please contact support.",
+        booking: result.booking,
+      });
+    }
 
     res.status(200).json({
       success: true,
-      message: "Payment successful and booking confirmed!",
-      booking,
+      message: result.alreadyConfirmed
+        ? "Payment already verified and booking is confirmed."
+        : "Payment successful and booking confirmed!",
+      booking: result.booking,
     });
   } catch (error) {
     console.error("verifyPayment error:", error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
-      message: "Payment verification error occurred",
+      message:
+        error.statusCode && error.statusCode < 500
+          ? error.message
+          : "Payment verification error occurred",
     });
   }
 };
@@ -308,7 +265,7 @@ const razorpayWebhook = async (req, res) => {
     const signature = req.headers["x-razorpay-signature"];
     const rawBody = req.rawBody;
 
-    if (!signature || !rawBody) {
+    if (!signature || !Buffer.isBuffer(rawBody)) {
       return res.status(400).json({ status: "fail", message: "Missing webhook signature or payload" });
     }
 
@@ -318,51 +275,74 @@ const razorpayWebhook = async (req, res) => {
       return res.status(400).json({ status: "fail", message: "Invalid webhook signature" });
     }
 
-    const event = JSON.parse(rawBody.toString("utf8"));
+    let event;
+    try {
+      event = JSON.parse(rawBody.toString("utf8"));
+    } catch {
+      return res.status(400).json({ status: "fail", message: "Invalid webhook payload" });
+    }
+
     const eventType = event.event;
+    const eventId =
+      req.headers["x-razorpay-event-id"] ||
+      crypto.createHash("sha256").update(rawBody).digest("hex");
 
-    if (eventType === "order.paid" || eventType === "payment.captured") {
-      const paymentEntity = event.payload?.payment?.entity || event.payload?.order?.entity;
-      const orderId = paymentEntity?.order_id || paymentEntity?.id;
+    const existingEvent = await WebhookEvent.findOne({ eventId });
+    if (existingEvent?.processedAt) {
+      return res.status(200).json({ status: "success" });
+    }
 
-      if (orderId) {
-        const booking = await Booking.findOne({ razorpayOrderId: orderId });
-        if (booking && !booking.paid) {
-          booking.paid = true;
-          booking.paymentStatus = "paid";
-          if (paymentEntity?.id && paymentEntity.id.startsWith("pay_")) {
-            booking.razorpayPaymentId = paymentEntity.id;
-          }
-          await booking.save();
+    try {
+      await WebhookEvent.updateOne(
+        { eventId },
+        { $setOnInsert: { eventId, eventType } },
+        { upsert: true }
+      );
+    } catch (error) {
+      if (error.code !== 11000) throw error;
+    }
 
-          await Property.findByIdAndUpdate(booking.property, {
-            $addToSet: {
-              currentBookings: {
-                bookingId: booking._id,
-                fromDate: booking.fromDate,
-                toDate: booking.toDate,
-                userId: booking.user,
-              },
-            },
-          });
-          console.log(`Webhook successfully processed ${eventType} for order ${orderId}`);
-        }
+    if (eventType === "payment.captured") {
+      const payment = event.payload?.payment?.entity;
+      if (!payment?.order_id || !payment?.id) {
+        return res.status(400).json({
+          status: "fail",
+          message: "Webhook payment details are incomplete",
+        });
+      }
+
+      const result = await confirmBookingPayment({
+        orderId: payment.order_id,
+        payment,
+      });
+      if (result.status === "refund_pending") {
+        console.error(
+          `Captured payment ${payment.id} could not be booked; refund recovery is pending.`
+        );
       }
     } else if (eventType === "payment.failed") {
-      const paymentEntity = event.payload?.payment?.entity;
-      const orderId = paymentEntity?.order_id;
-      if (orderId) {
-        await Booking.findOneAndUpdate(
-          { razorpayOrderId: orderId, paid: false },
-          { paymentStatus: "failed" }
-        );
+      const payment = event.payload?.payment?.entity;
+      if (payment?.order_id && payment.id) {
+        await markPaymentFailed({
+          orderId: payment.order_id,
+        });
       }
     }
 
+    await WebhookEvent.updateOne(
+      { eventId },
+      { $set: { processedAt: new Date() } }
+    );
     res.status(200).json({ status: "success" });
   } catch (error) {
     console.error("Webhook processing error:", error);
-    res.status(500).json({ status: "error", message: "Internal server error" });
+    res.status(error.statusCode || 500).json({
+      status: error.statusCode && error.statusCode < 500 ? "fail" : "error",
+      message:
+        error.statusCode && error.statusCode < 500
+          ? error.message
+          : "Internal server error",
+    });
   }
 };
 
