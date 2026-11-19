@@ -155,7 +155,8 @@ HomelyHub/
 - [Frontend guide](frontend/README.md) → [frontend source](frontend/src/README.md),
   [components](frontend/src/components/README.md),
   [Redux store](frontend/src/store/README.md), [AI helpers](frontend/src/ai/README.md).
-- [GitHub Actions guide](.github/README.md) → [workflow details](.github/workflows/README.md).
+- [GitHub Actions workflow](.github/workflows/ci.yml) — automated checks on
+  pushes and pull requests.
 
 The source does not define separate `pages/`, `hooks/`, or backend `config/`
 directories; routing and feature pages live in the documented application
@@ -269,7 +270,7 @@ sequenceDiagram
   participant RZP as Razorpay Checkout/API
   Guest->>UI: Choose dates and request booking
   UI->>API: POST /booking/create-order
-  API->>DB: Check availability; create checkout hold
+  API->>DB: Check availability and create checkout hold
   API->>RZP: Create order
   RZP-->>API: Order ID and amount
   API-->>UI: Checkout order details
@@ -373,7 +374,7 @@ flowchart LR
   Worker --> Reconcile[Reconcile existing Razorpay refund]
   Reconcile -->|No confirmed refund| Gateway[Razorpay refund API with idempotency key]
   Gateway --> Webhook[Signed refund webhook and/or gateway fetch]
-  Webhook -->|Confirmed processed| Done[Task processed; booking refund_processed]
+  Webhook -->|Confirmed processed| Done[Task processed and booking refund_processed]
   Webhook -->|Failed/retryable| Retry[Retry with limits/backoff]
 ```
 
@@ -617,7 +618,7 @@ Backend tests use Node's `node:test` runner, generally with mocked database and
 external integrations. `npm run test:coverage` enforces a configured 80%
 statement threshold. The frontend package has lint/build scripts but no test
 script. CI runs backend checks/tests/coverage, lints selected frontend files,
-and builds the frontend; see [CI details](.github/workflows/README.md).
+and builds the frontend; see the [CI workflow](.github/workflows/ci.yml).
 
 ### Troubleshooting
 
@@ -649,4 +650,5 @@ These are recommendations, not claims about existing features:
 
 Repository: [asfahana01/HomelyHub](https://github.com/asfahana01/HomelyHub).
 See [backend](backend/README.md), [frontend](frontend/README.md), and
-[GitHub Actions](.github/README.md) documentation for implementation details.
+[the GitHub Actions workflow](.github/workflows/ci.yml) for implementation
+details.
