@@ -61,11 +61,11 @@ const FilterModal = ({ selectedFilters, onFilterChange, onClose }) => {
   };
 
   const propertyTypeOptions = [
-    { value: "house", label: "House", icon: "home" },
-    { value: "flat", label: "Flat", icon: "apartment" },
-    { value: "guest-house", label: "Guest House", icon: "hotel" },
-    { value: "hotel", label: "Hotel", icon: "meeting_room" },
-  ];
+  { value: "House", label: "House", icon: "home" },
+  { value: "Flat", label: "Flat", icon: "apartment" },
+  { value: "Guest House", label: "Guest House", icon: "hotel" },
+  { value: "Hotel", label: "Hotel", icon: "meeting_room" },
+];
 
   const roomTypeOptions = [
     { value: "Entire Home", label: "Entire Home", icon: "hotel" },
@@ -74,7 +74,7 @@ const FilterModal = ({ selectedFilters, onFilterChange, onClose }) => {
   ];
 
   const amenitiesOptions = [
-    { value: "Wifi", label: "Wi-Fi", icon: "wifi" },
+    { value: "wifi", label: "Wi-Fi", icon: "wifi" },
     { value: "Kitchen", label: "Kitchen", icon: "kitchen" },
     { value: "Ac", label: "AC", icon: "ac_unit" },
     {
