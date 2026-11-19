@@ -14,6 +14,11 @@ import {
   releaseCheckoutHold,
   reserveCheckoutHold,
 } from "../services/bookingConfirmationService.js";
+import {
+  claimWebhookEvent,
+  markWebhookEventFailed,
+  markWebhookEventProcessed,
+} from "../services/webhookEventService.js";
 
 // Helper: Calculate nights between two dates
 const calculateNights = (fromDate, toDate) => {
@@ -261,87 +266,93 @@ const verifyPayment = async (req, res) => {
 
 // 3. RAZORPAY WEBHOOK - Idempotent, signature-verified webhook handler
 const razorpayWebhook = async (req, res) => {
+  const signature = req.headers["x-razorpay-signature"];
+  const rawBody = req.rawBody;
+
+  if (!signature || !Buffer.isBuffer(rawBody)) {
+    return res.status(400).json({
+      status: "fail",
+      message: "Missing webhook signature or payload",
+    });
+  }
+
+  if (!verifyWebhookSignature({ rawBody, signature })) {
+    console.warn("Unauthorized webhook attempt rejected");
+    return res.status(400).json({
+      status: "fail",
+      message: "Invalid webhook signature",
+    });
+  }
+
+  let event;
   try {
-    const signature = req.headers["x-razorpay-signature"];
-    const rawBody = req.rawBody;
+    event = JSON.parse(rawBody.toString("utf8"));
+  } catch {
+    return res.status(400).json({
+      status: "fail",
+      message: "Invalid webhook payload",
+    });
+  }
 
-    if (!signature || !Buffer.isBuffer(rawBody)) {
-      return res.status(400).json({ status: "fail", message: "Missing webhook signature or payload" });
-    }
+  const eventType = event.event;
+  const eventId =
+    req.headers["x-razorpay-event-id"] ||
+    crypto.createHash("sha256").update(rawBody).digest("hex");
 
-    const isValid = verifyWebhookSignature({ rawBody, signature });
-    if (!isValid) {
-      console.warn("Unauthorized webhook attempt rejected");
-      return res.status(400).json({ status: "fail", message: "Invalid webhook signature" });
-    }
+  let claim;
+  try {
+    claim = await claimWebhookEvent({ eventId, eventType });
+  } catch (error) {
+    console.error("Webhook event claim failed:", error);
+    return res.status(503).json({
+      status: "error",
+      message: "Webhook event could not be claimed",
+    });
+  }
 
-    let event;
-    try {
-      event = JSON.parse(rawBody.toString("utf8"));
-    } catch {
-      return res.status(400).json({ status: "fail", message: "Invalid webhook payload" });
-    }
+  if (!claim.claimed) {
+    return res.status(200).json({ status: "success" });
+  }
 
-    const eventType = event.event;
-    const eventId =
-      req.headers["x-razorpay-event-id"] ||
-      crypto.createHash("sha256").update(rawBody).digest("hex");
-
-    const existingEvent = await WebhookEvent.findOne({ eventId });
-    if (existingEvent?.processedAt) {
-      return res.status(200).json({ status: "success" });
-    }
-
-    try {
-      await WebhookEvent.updateOne(
-        { eventId },
-        { $setOnInsert: { eventId, eventType } },
-        { upsert: true }
-      );
-    } catch (error) {
-      if (error.code !== 11000) throw error;
-    }
-
+  try {
     if (eventType === "payment.captured") {
       const payment = event.payload?.payment?.entity;
       if (!payment?.order_id || !payment?.id) {
-        return res.status(400).json({
-          status: "fail",
-          message: "Webhook payment details are incomplete",
-        });
+        throw new BookingConfirmationError(
+          "Webhook payment details are incomplete",
+          400
+        );
       }
 
-      const result = await confirmBookingPayment({
+      await confirmBookingPayment({
         orderId: payment.order_id,
         payment,
       });
-      if (result.status === "refund_pending") {
-        console.error(
-          `Captured payment ${payment.id} could not be booked; refund recovery is pending.`
-        );
-      }
     } else if (eventType === "payment.failed") {
       const payment = event.payload?.payment?.entity;
-      if (payment?.order_id && payment.id) {
-        await markPaymentFailed({
-          orderId: payment.order_id,
-        });
+      if (!payment?.order_id) {
+        throw new BookingConfirmationError(
+          "Webhook failed-payment details are incomplete",
+          400
+        );
       }
+      await markPaymentFailed({ orderId: payment.order_id });
     }
 
-    await WebhookEvent.updateOne(
-      { eventId },
-      { $set: { processedAt: new Date() } }
-    );
-    res.status(200).json({ status: "success" });
+    await markWebhookEventProcessed(eventId);
+    return res.status(200).json({ status: "success" });
   } catch (error) {
-    console.error("Webhook processing error:", error);
-    res.status(error.statusCode || 500).json({
+    await markWebhookEventFailed(eventId, error);
+    console.error(
+      `Webhook event ${eventId} processing failed:`,
+      error instanceof Error ? error.message : "Unknown error"
+    );
+    return res.status(error.statusCode || 500).json({
       status: error.statusCode && error.statusCode < 500 ? "fail" : "error",
       message:
         error.statusCode && error.statusCode < 500
           ? error.message
-          : "Internal server error",
+          : "Webhook processing failed; the event will be retried",
     });
   }
 };

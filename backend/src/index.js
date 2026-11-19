@@ -123,6 +123,17 @@ app.use((err, req, res, next) => {
 connectDB();
 
 if (process.env.NODE_ENV !== "test") {
+  const refundInterval =
+    Number(process.env.REFUND_WORKER_INTERVAL_MS) || 60 * 1000;
+  import("./services/refundWorker.js")
+    .then(({ startRefundWorker }) => startRefundWorker({ intervalMs: refundInterval }))
+    .catch((error) => {
+      console.error(
+        "Unable to start refund reconciliation worker:",
+        error instanceof Error ? error.message : "Unknown error"
+      );
+    });
+
   app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
   });

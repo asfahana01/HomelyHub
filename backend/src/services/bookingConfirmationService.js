@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import { Booking } from "../models/bookingModel.js";
 import { Property } from "../models/propertyModel.js";
+import { RefundTask } from "../models/refundTaskModel.js";
 
 export const CHECKOUT_HOLD_MS = 15 * 60 * 1000;
 
@@ -107,27 +108,20 @@ export const releaseCheckoutHold = async (booking) =>
     { $pull: { bookingHolds: { bookingId: booking._id } } }
   );
 
-const isTransactionUnavailable = (error) =>
-  error?.code === 20 ||
-  /transaction numbers are only allowed|transactions are not supported|replica set/i.test(
-    error?.message || ""
-  );
-
-const withSession = (query, session) =>
-  session ? query.session(session) : query;
-
-const confirmWithDatabase = async (
+const confirmWithTransaction = async (
   { orderId, payment, paymentId, signature, userId },
   session
 ) => {
-  const bookingQuery = Booking.findOne({
+  const booking = await Booking.findOne({
     razorpayOrderId: orderId,
     ...(userId ? { user: userId } : {}),
-  });
-  const booking = await withSession(bookingQuery, session);
+  }).session(session);
 
   if (!booking) {
-    throw new BookingConfirmationError("No matching booking found for this order.", 404);
+    throw new BookingConfirmationError(
+      "No matching booking found for this order.",
+      404
+    );
   }
 
   validateCapturedPayment(payment, booking, orderId, paymentId);
@@ -142,127 +136,195 @@ const confirmWithDatabase = async (
     return { status: "confirmed", booking, alreadyConfirmed: true };
   }
 
-  if (booking.paymentStatus === "refund_pending") {
-    if (booking.razorpayPaymentId !== payment.id) {
-      throw new BookingConfirmationError(
-        "A refund is pending for a different payment.",
-        409
-      );
+  if (booking.razorpayPaymentId && booking.razorpayPaymentId !== payment.id) {
+    throw new BookingConfirmationError(
+      "This booking is associated with a different payment.",
+      409
+    );
+  }
+
+  if (
+    booking.paymentStatus === "confirming" &&
+    booking.confirmingPaymentId === payment.id
+  ) {
+    throw new BookingConfirmationError(
+      "Payment confirmation is already being processed.",
+      409
+    );
+  }
+
+  if (
+    ["refund_pending", "refund_processed"].includes(booking.paymentStatus)
+  ) {
+    if (booking.razorpayPaymentId === payment.id) {
+      return { status: "refund_pending", booking };
     }
-    return { status: "refund_pending", booking };
+    throw new BookingConfirmationError(
+      "This booking is already awaiting or completed refund processing.",
+      409
+    );
+  }
+
+  const claimed = await Booking.findOneAndUpdate(
+    {
+      _id: booking._id,
+      paid: false,
+      razorpayOrderId: orderId,
+      $or: [
+        { razorpayPaymentId: { $exists: false } },
+        { razorpayPaymentId: null },
+        { razorpayPaymentId: payment.id },
+      ],
+      paymentStatus: { $nin: ["paid", "refund_pending", "refund_processed"] },
+    },
+    {
+      $set: {
+        paymentStatus: "confirming",
+        confirmingPaymentId: payment.id,
+        razorpayPaymentId: payment.id,
+        ...(signature ? { razorpaySignature: signature } : {}),
+      },
+    },
+    { new: true, session }
+  );
+
+  if (!claimed) {
+    const latest = await Booking.findById(booking._id).session(session);
+    if (latest?.paid && latest.razorpayPaymentId === payment.id) {
+      return { status: "confirmed", booking: latest, alreadyConfirmed: true };
+    }
+    throw new BookingConfirmationError(
+      "This booking is already being confirmed by another payment.",
+      409
+    );
   }
 
   const now = new Date();
-  const updatedPropertyResult = await Property.collection.updateOne(
-    availabilityFilter(booking.property, booking, now),
+  const propertyUpdate = await Property.collection.updateOne(
+    availabilityFilter(claimed.property, claimed, now),
     {
-      $pull: {
-        bookingHolds: { bookingId: booking._id },
-      },
+      $pull: { bookingHolds: { bookingId: claimed._id } },
       $addToSet: {
         currentBookings: {
-          bookingId: booking._id,
-          fromDate: booking.fromDate,
-          toDate: booking.toDate,
-          userId: documentId(booking.user),
+          bookingId: claimed._id,
+          fromDate: claimed.fromDate,
+          toDate: claimed.toDate,
+          userId: documentId(claimed.user),
         },
       },
     },
-    session ? { session } : {}
+    { session }
   );
 
-  if (!updatedPropertyResult.matchedCount) {
-    const refundBookingQuery = Booking.findOneAndUpdate(
-      { _id: booking._id, paid: false },
+  if (!propertyUpdate.matchedCount) {
+    await Booking.findOneAndUpdate(
+      {
+        _id: claimed._id,
+        paymentStatus: "confirming",
+        confirmingPaymentId: payment.id,
+      },
       {
         $set: {
+          paid: false,
           paymentStatus: "refund_pending",
+          confirmingPaymentId: null,
           razorpayPaymentId: payment.id,
           ...(signature ? { razorpaySignature: signature } : {}),
         },
       },
-      { new: true, session }
-    );
-    const refundBooking = await refundBookingQuery;
-    await Property.updateOne(
-      { _id: booking.property },
-      { $pull: { bookingHolds: { bookingId: booking._id } } },
       { session }
     );
-    return { status: "refund_pending", booking: refundBooking || booking };
-  }
 
-  let confirmedBooking;
-  try {
-    confirmedBooking = await Booking.findOneAndUpdate(
-      { _id: booking._id, paid: false, paymentStatus: { $ne: "refund_pending" } },
+    await RefundTask.updateOne(
+      { paymentId: payment.id },
       {
+        $setOnInsert: {
+          booking: claimed._id,
+          orderId,
+          paymentId: payment.id,
+          amount: Number(payment.amount),
+          currency: "INR",
+        },
         $set: {
-          paid: true,
-          paymentStatus: "paid",
-          razorpayPaymentId: payment.id,
-          ...(signature ? { razorpaySignature: signature } : {}),
+          status: "pending",
+          nextRetryAt: new Date(),
+          leaseExpiresAt: null,
+          lastError: "",
         },
       },
-      { new: true, session }
+      { upsert: true, session }
     );
-  } catch (error) {
-    if (!session) {
-      const latestBooking = await Booking.findById(booking._id);
-      if (latestBooking && !latestBooking.paid) {
-        await Property.updateOne(
-          { _id: documentId(booking.property) },
-          { $pull: { currentBookings: { bookingId: booking._id } } }
-        );
-      }
-    }
-    throw error;
+
+    await Property.updateOne(
+      { _id: documentId(claimed.property) },
+      { $pull: { bookingHolds: { bookingId: claimed._id } } },
+      { session }
+    );
+
+    const refundBooking = await Booking.findById(claimed._id).session(session);
+    return { status: "refund_pending", booking: refundBooking };
   }
 
-  if (!confirmedBooking) {
-    const latestBookingQuery = Booking.findById(booking._id);
-    const latestBooking = await withSession(latestBookingQuery, session);
-    if (
-      latestBooking?.paid &&
-      latestBooking.razorpayPaymentId === payment.id
-    ) {
-      return { status: "confirmed", booking: latestBooking, alreadyConfirmed: true };
-    }
-    if (!session) {
-      await Property.updateOne(
-        { _id: documentId(booking.property) },
-        { $pull: { currentBookings: { bookingId: booking._id } } }
-      );
-    }
+  const confirmed = await Booking.findOneAndUpdate(
+    {
+      _id: claimed._id,
+      paymentStatus: "confirming",
+      confirmingPaymentId: payment.id,
+      paid: false,
+    },
+    {
+      $set: {
+        paid: true,
+        paymentStatus: "paid",
+        confirmingPaymentId: null,
+        razorpayPaymentId: payment.id,
+      },
+    },
+    { new: true, session }
+  );
+
+  if (!confirmed) {
     throw new BookingConfirmationError(
-      "The payment was captured, but booking confirmation needs recovery.",
-      503
+      "Booking confirmation state changed unexpectedly.",
+      409
     );
   }
-
-  return { status: "confirmed", booking: confirmedBooking, alreadyConfirmed: false };
+  return { status: "confirmed", booking: confirmed, alreadyConfirmed: false };
 };
 
 export const confirmBookingPayment = async (details) => {
   if (mongoose.connection.readyState !== 1) {
-    return confirmWithDatabase(details, null);
+    throw new BookingConfirmationError(
+      "Payment confirmation unavailable: database is not connected.",
+      503
+    );
   }
 
-  let session;
+  const session = await mongoose.startSession();
   try {
-    session = await mongoose.startSession();
     let result;
     await session.withTransaction(async () => {
-      result = await confirmWithDatabase(details, session);
+      result = await confirmWithTransaction(details, session);
     });
     return result;
   } catch (error) {
-    if (!isTransactionUnavailable(error)) {
-      throw error;
+    if (
+      error?.code === 20 ||
+      /transaction numbers are only allowed|transactions are not supported|replica set/i.test(
+        error?.message || ""
+      )
+    ) {
+      console.error(
+        "Payment confirmation refused because MongoDB transactions are unavailable. Replica-set deployment required."
+      );
+      throw new BookingConfirmationError(
+        "Payment confirmation is unavailable because MongoDB transactions are not supported. Please retry in a supported deployment.",
+        503
+      );
     }
-    return confirmWithDatabase(details, null);
+    throw error;
   } finally {
-    if (session) await session.endSession();
+    await session.endSession();
   }
 };
 
@@ -281,3 +343,5 @@ export const markPaymentFailed = async ({ orderId }) => {
   }
   return booking;
 };
+
+export { confirmWithTransaction };

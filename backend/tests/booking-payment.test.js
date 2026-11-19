@@ -1,14 +1,21 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import mongoose from "mongoose";
 import { Booking } from "../src/models/bookingModel.js";
 import { Property } from "../src/models/propertyModel.js";
 import { WebhookEvent } from "../src/models/webhookEventModel.js";
+import { RefundTask } from "../src/models/refundTaskModel.js";
 import {
   confirmBookingPayment,
   reserveCheckoutHold,
   validateCapturedPayment,
+  confirmWithTransaction,
 } from "../src/services/bookingConfirmationService.js";
+import {
+  processRefundTask,
+  reconcileRefundTask,
+} from "../src/services/refundService.js";
 import {
   razorpayWebhook,
   verifyPayment,
@@ -86,22 +93,55 @@ const setWebhookSecret = (t) => {
   });
 };
 
+const withFakeTransactions = (t) => {
+  const previousReadyState = mongoose.connection.readyState;
+  mongoose.connection.readyState = 1;
+  t.after(() => {
+    mongoose.connection.readyState = previousReadyState;
+  });
+
+  t.mock.method(mongoose, "startSession", async () => ({
+    async withTransaction(callback) {
+      await callback();
+    },
+    async endSession() {},
+  }));
+};
+
+const mockFindOne = (t, model, value) => {
+  t.mock.method(model, "findOne", () => ({
+    session: async () => value,
+  }));
+};
+
 describe("Razorpay booking confirmation", () => {
   test("accepts a correctly signed captured-payment webhook and confirms both records", async (t) => {
     setWebhookSecret(t);
+    withFakeTransactions(t);
     const booking = makeBooking();
     let updatedProperty;
     let updatedBooking;
     t.mock.method(WebhookEvent, "findOne", async () => null);
-    t.mock.method(WebhookEvent, "updateOne", async () => ({}));
-    t.mock.method(Booking, "findOne", async () => booking);
+    t.mock.method(WebhookEvent, "findOneAndUpdate", async () => ({
+      eventId: "evt_test_1",
+      status: "processing",
+    }));
+    t.mock.method(Booking, "findOne", () => ({
+      session: async () => booking,
+    }));
     t.mock.method(Property.collection, "updateOne", async (_filter, update) => {
       updatedProperty = update;
       return { matchedCount: 1 };
     });
     t.mock.method(Booking, "findOneAndUpdate", async (_filter, update) => {
       updatedBooking = update.$set;
-      return { ...booking, ...update.$set };
+      return {
+        ...booking,
+        ...update.$set,
+        paymentStatus: update.$set.paymentStatus === "confirming"
+          ? "confirming"
+          : "paid",
+      };
     });
 
     const response = makeResponse();
@@ -142,6 +182,7 @@ describe("Razorpay booking confirmation", () => {
   });
 
   test("rejects captured payments with wrong amount, currency, or status", async (t) => {
+    withFakeTransactions(t);
     const booking = makeBooking();
     const cases = [
       [makePayment({ amount: 49999 }), /amount or currency mismatch/],
@@ -157,7 +198,9 @@ describe("Razorpay booking confirmation", () => {
     }
 
     let propertyWrites = 0;
-    t.mock.method(Booking, "findOne", async () => booking);
+    t.mock.method(Booking, "findOne", () => ({
+      session: async () => booking,
+    }));
     t.mock.method(Property.collection, "updateOne", async () => {
       propertyWrites += 1;
       return { matchedCount: 1 };
@@ -205,17 +248,25 @@ describe("Razorpay booking confirmation", () => {
 
   test("deduplicates repeated webhook event IDs", async (t) => {
     setWebhookSecret(t);
+    withFakeTransactions(t);
     const booking = makeBooking();
     let processed = false;
     let propertyWrites = 0;
     t.mock.method(WebhookEvent, "findOne", async () =>
-      processed ? { processedAt: new Date() } : null
+      processed
+        ? { eventId: "evt_duplicate", status: "processed", processedAt: new Date() }
+        : null
     );
-    t.mock.method(WebhookEvent, "updateOne", async (_filter, update) => {
-      if (update.$set?.processedAt) processed = true;
-      return {};
+    t.mock.method(WebhookEvent, "findOneAndUpdate", async () => {
+      if (!processed) {
+        processed = true;
+        return { eventId: "evt_duplicate", status: "processing" };
+      }
+      return null;
     });
-    t.mock.method(Booking, "findOne", async () => booking);
+    t.mock.method(Booking, "findOne", () => ({
+      session: async () => booking,
+    }));
     t.mock.method(Property.collection, "updateOne", async () => {
       propertyWrites += 1;
       return { matchedCount: 1 };
@@ -278,13 +329,16 @@ describe("Razorpay booking confirmation", () => {
   });
 
   test("confirms a booking idempotently and rejects a different payment ID", async (t) => {
+    withFakeTransactions(t);
     const booking = makeBooking({
       paid: true,
       paymentStatus: "paid",
       razorpayPaymentId: paymentId,
     });
     let propertyWrites = 0;
-    t.mock.method(Booking, "findOne", async () => booking);
+    t.mock.method(Booking, "findOne", () => ({
+      session: async () => booking,
+    }));
     t.mock.method(Property.collection, "updateOne", async () => {
       propertyWrites += 1;
       return { matchedCount: 1 };
@@ -305,8 +359,11 @@ describe("Razorpay booking confirmation", () => {
   });
 
   test("records a captured payment for refund recovery when dates are no longer available", async (t) => {
+    withFakeTransactions(t);
     const booking = makeBooking();
-    t.mock.method(Booking, "findOne", async () => booking);
+    t.mock.method(Booking, "findOne", () => ({
+      session: async () => booking,
+    }));
     t.mock.method(Property.collection, "updateOne", async () => ({ matchedCount: 0 }));
     let statusUpdate;
     t.mock.method(Booking, "findOneAndUpdate", async (_filter, update) => {
@@ -314,11 +371,205 @@ describe("Razorpay booking confirmation", () => {
       return { ...booking, ...update.$set };
     });
     t.mock.method(Property, "updateOne", async () => ({}));
+    t.mock.method(Booking, "findById", () => ({
+      session: async () => ({
+        ...booking,
+        paymentStatus: "refund_pending",
+        razorpayPaymentId: paymentId,
+      }),
+    }));
+    t.mock.method(RefundTask, "updateOne", async () => ({}));
 
     const result = await confirmBookingPayment({ orderId, payment: makePayment() });
     assert.equal(result.status, "refund_pending");
     assert.equal(statusUpdate.paymentStatus, "refund_pending");
     assert.equal(statusUpdate.razorpayPaymentId, paymentId);
-    assert.equal(statusUpdate.paid, undefined);
+    assert.equal(statusUpdate.paid, false);
   });
+
+  test("rejects incorrect payment ID and incorrect Razorpay order ID", () => {
+    const booking = makeBooking();
+    assert.throws(
+      () =>
+        validateCapturedPayment(
+          makePayment({ id: "pay_wrong" }),
+          booking,
+          orderId,
+          paymentId
+        ),
+      /Payment ID does not match/
+    );
+    assert.throws(
+      () =>
+        validateCapturedPayment(
+          makePayment({ order_id: "order_wrong" }),
+          booking,
+          orderId
+        ),
+      /does not belong/
+    );
+  });
+
+  test("fails closed when MongoDB transactions are unavailable", async (t) => {
+    const previousReadyState = mongoose.connection.readyState;
+    mongoose.connection.readyState = 1;
+    t.after(() => {
+      mongoose.connection.readyState = previousReadyState;
+    });
+    t.mock.method(mongoose, "startSession", async () => ({
+      async withTransaction() {
+        const error = new Error(
+          "Transaction numbers are only allowed on a replica set member"
+        );
+        error.code = 20;
+        throw error;
+      },
+      async endSession() {},
+    }));
+
+    await assert.rejects(
+      confirmBookingPayment({
+        orderId,
+        payment: makePayment(),
+      }),
+      /MongoDB transactions are not supported/
+    );
+  });
+
+  test("refund task schema stores the captured payment safely", () => {
+    const task = new RefundTask({
+      booking: bookingId,
+      orderId,
+      paymentId,
+      amount: 50000,
+      currency: "INR",
+    });
+    assert.equal(task.status, "pending");
+    assert.equal(task.currency, "INR");
+    assert.equal(task.amount, 50000);
+    assert.equal(task.attempts, 0);
+    assert.equal(task.validateSync(), undefined);
+  });
+
+  test("concurrent webhook claims are rejected once one request owns the lease", async (t) => {
+    let claimed = false;
+    t.mock.method(WebhookEvent, "findOneAndUpdate", async () => {
+      if (claimed) return null;
+      claimed = true;
+      return {
+        eventId: "evt_concurrent",
+        eventType: "payment.captured",
+        status: "processing",
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+      };
+    });
+    t.mock.method(WebhookEvent, "findOne", async () => ({
+      eventId: "evt_concurrent",
+      status: "processing",
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+    }));
+
+    const [{ claimWebhookEvent }] = await Promise.all([
+      import("../src/services/webhookEventService.js"),
+    ]);
+    const first = await claimWebhookEvent({
+      eventId: "evt_concurrent",
+      eventType: "payment.captured",
+    });
+    const second = await claimWebhookEvent({
+      eventId: "evt_concurrent",
+      eventType: "payment.captured",
+    });
+
+    assert.equal(first.claimed, true);
+    assert.equal(second.claimed, false);
+    assert.equal(second.reason, "processing");
+  });
+
+  test("refund reconciliation does not create another refund when Razorpay already has it", async () => {
+    const task = {
+      _id: "refund_task_1",
+      paymentId,
+      refundId: "rfnd_existing",
+      amount: 50000,
+      booking: bookingId,
+      attempts: 1,
+    };
+    let refundCalls = 0;
+    const razorpay = {
+      payments: {
+        fetch: async () => ({ id: paymentId, status: "captured" }),
+        fetchRefund: async () => ({ id: "rfnd_existing", status: "processed" }),
+        refund: async () => {
+          refundCalls += 1;
+        },
+      },
+    };
+
+    const refund = await reconcileRefundTask(task, razorpay);
+    assert.equal(refund.id, "rfnd_existing");
+    assert.equal(refund.status, "processed");
+    assert.equal(refundCalls, 0);
+  });
+
+  test("refund task uses pending, processed, and failed state transitions", async (t) => {
+    const task = {
+      _id: "refund_task_1",
+      booking: bookingId,
+      paymentId,
+      amount: 50000,
+      attempts: 1,
+    };
+    const updates = [];
+    t.mock.method(RefundTask, "updateOne", async (_filter, update) => {
+      updates.push(update.$set);
+      return {};
+    });
+    t.mock.method(Booking, "updateOne", async () => ({}));
+
+    const pendingTask = { ...task };
+    const pendingReconciler = await reconcileRefundTask(
+      pendingTask,
+      {
+        payments: {
+          fetch: async () => ({ id: paymentId, status: "captured" }),
+          fetchMultipleRefund: async () => ({
+            items: [
+              {
+                id: "rfnd_pending",
+                payment_id: paymentId,
+                amount: 50000,
+                currency: "INR",
+                status: "pending",
+              },
+            ],
+          }),
+        },
+      }
+    );
+    assert.equal(pendingReconciler.status, "pending");
+
+    const processed = await reconcileRefundTask(
+      task,
+      {
+        payments: {
+          fetch: async () => ({ id: paymentId, status: "captured" }),
+          fetchMultipleRefund: async () => ({
+            items: [
+              {
+                id: "rfnd_processed",
+                payment_id: paymentId,
+                amount: 50000,
+                currency: "INR",
+                status: "processed",
+              },
+            ],
+          }),
+        },
+      }
+    );
+    assert.equal(processed.status, "processed");
+    assert.equal(updates.length, 0);
+  });
+
 });
