@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { WebhookEvent } from "../models/webhookEventModel.js";
 
 export const WEBHOOK_PROCESSING_LEASE_MS = 2 * 60 * 1000;
@@ -5,13 +6,33 @@ export const WEBHOOK_PROCESSING_LEASE_MS = 2 * 60 * 1000;
 export const claimWebhookEvent = async ({ eventId, eventType }) => {
   const now = new Date();
   const leaseExpiresAt = new Date(Date.now() + WEBHOOK_PROCESSING_LEASE_MS);
+  const claimToken = crypto.randomUUID();
+
+  try {
+    await WebhookEvent.findOneAndUpdate(
+      { eventId },
+      {
+        $setOnInsert: {
+          eventId,
+          eventType,
+          status: "pending",
+        },
+      },
+      { upsert: true, returnDocument: "after" }
+    );
+  } catch (error) {
+    if (error?.code !== 11000) throw error;
+  }
 
   const claimed = await WebhookEvent.findOneAndUpdate(
     {
       eventId,
       $or: [
         { status: { $in: ["pending", "failed"] } },
-        { status: "processing", leaseExpiresAt: { $lte: now } },
+        {
+          status: "processing",
+          leaseExpiresAt: { $not: { $gt: now } },
+        },
         { status: { $exists: false } },
       ],
     },
@@ -20,41 +41,19 @@ export const claimWebhookEvent = async ({ eventId, eventType }) => {
         eventType,
         status: "processing",
         leaseExpiresAt,
+        claimToken,
         processingStartedAt: now,
         lastError: "",
       },
     },
-    { new: true }
+    { returnDocument: "after" }
   );
 
   if (claimed) {
-    return { claimed: true, event: claimed };
+    return { claimed: true, event: claimed, claimToken };
   }
 
-  let event = await WebhookEvent.findOne({ eventId });
-  if (!event) {
-    try {
-      event = await WebhookEvent.findOneAndUpdate(
-        { eventId },
-        {
-          $setOnInsert: {
-            eventId,
-            eventType,
-            status: "pending",
-          },
-        },
-        { upsert: true, new: true }
-      );
-    } catch (error) {
-      if (error?.code !== 11000) throw error;
-      event = await WebhookEvent.findOne({ eventId });
-    }
-
-    if (event?.status === "pending" || event?.status === "failed") {
-      return claimWebhookEvent({ eventId, eventType });
-    }
-  }
-
+  const event = await WebhookEvent.findOne({ eventId });
   if (event?.status === "processed") {
     return { claimed: false, reason: "processed", event };
   }
@@ -65,39 +64,47 @@ export const claimWebhookEvent = async ({ eventId, eventType }) => {
   ) {
     return { claimed: false, reason: "processing", event };
   }
-  if (event?.status === "failed") {
-    return claimWebhookEvent({ eventId, eventType });
-  }
-
-  return claimWebhookEvent({ eventId, eventType });
+  return { claimed: false, reason: "claim_race", event };
 };
 
-export const markWebhookEventProcessed = async (eventId) =>
+export const markWebhookEventProcessed = async (eventId, claimToken) =>
   WebhookEvent.findOneAndUpdate(
-    { eventId, status: "processing" },
+    {
+      eventId,
+      status: "processing",
+      claimToken,
+      leaseExpiresAt: { $gt: new Date() },
+    },
     {
       $set: {
         status: "processed",
         processedAt: new Date(),
         leaseExpiresAt: null,
+        claimToken: null,
         lastError: "",
       },
     },
-    { new: true }
+    { returnDocument: "after" }
   );
 
-export const markWebhookEventFailed = async (eventId, error) =>
+export const markWebhookEventFailed = async (eventId, claimToken, error) =>
   WebhookEvent.findOneAndUpdate(
-    { eventId, status: "processing" },
+    {
+      eventId,
+      status: "processing",
+      claimToken,
+      leaseExpiresAt: { $gt: new Date() },
+    },
     {
       $set: {
         status: "failed",
         leaseExpiresAt: null,
+        claimToken: null,
         lastError:
           error instanceof Error
             ? error.message.slice(0, 2000)
             : String(error).slice(0, 2000),
       },
     },
-    { new: true }
+    { returnDocument: "after" }
   );

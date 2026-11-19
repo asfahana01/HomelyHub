@@ -19,6 +19,9 @@ const webhookEventSchema = new mongoose.Schema(
     leaseExpiresAt: {
       type: Date,
     },
+    claimToken: {
+      type: String,
+    },
     processingStartedAt: {
       type: Date,
     },

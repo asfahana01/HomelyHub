@@ -47,6 +47,9 @@ const refundTaskSchema = new mongoose.Schema(
     leaseExpiresAt: {
       type: Date,
     },
+    claimToken: {
+      type: String,
+    },
     lastError: {
       type: String,
     },

@@ -10,12 +10,19 @@ import {
   confirmBookingPayment,
   reserveCheckoutHold,
   validateCapturedPayment,
-  confirmWithTransaction,
 } from "../src/services/bookingConfirmationService.js";
 import {
+  claimRefundTask,
   processRefundTask,
   reconcileRefundTask,
 } from "../src/services/refundService.js";
+import {
+  claimWebhookEvent,
+  markWebhookEventFailed,
+  markWebhookEventProcessed,
+} from "../src/services/webhookEventService.js";
+import { createRefundWorker } from "../src/services/refundWorker.js";
+import { startBackend } from "../src/utils/startup.js";
 import {
   razorpayWebhook,
   verifyPayment,
@@ -105,12 +112,6 @@ const withFakeTransactions = (t) => {
       await callback();
     },
     async endSession() {},
-  }));
-};
-
-const mockFindOne = (t, model, value) => {
-  t.mock.method(model, "findOne", () => ({
-    session: async () => value,
   }));
 };
 
@@ -250,19 +251,40 @@ describe("Razorpay booking confirmation", () => {
     setWebhookSecret(t);
     withFakeTransactions(t);
     const booking = makeBooking();
-    let processed = false;
+    let eventRow;
     let propertyWrites = 0;
     t.mock.method(WebhookEvent, "findOne", async () =>
-      processed
-        ? { eventId: "evt_duplicate", status: "processed", processedAt: new Date() }
-        : null
+      eventRow ? { ...eventRow } : null
     );
-    t.mock.method(WebhookEvent, "findOneAndUpdate", async () => {
-      if (!processed) {
-        processed = true;
-        return { eventId: "evt_duplicate", status: "processing" };
+    t.mock.method(WebhookEvent, "findOneAndUpdate", async (filter, update, options) => {
+      if (options?.upsert) {
+        eventRow ||= {
+          ...update.$setOnInsert,
+          status: "pending",
+        };
+        return { ...eventRow };
       }
-      return null;
+
+      if (filter.status === "processing") {
+        if (
+          eventRow?.status !== "processing" ||
+          eventRow.claimToken !== filter.claimToken
+        ) {
+          return null;
+        }
+        eventRow = { ...eventRow, ...update.$set };
+        return { ...eventRow };
+      }
+
+      if (
+        eventRow?.status !== "pending" &&
+        !(eventRow?.status === "processing" &&
+          eventRow.leaseExpiresAt <= filter.$or[1].leaseExpiresAt.$lte)
+      ) {
+        return null;
+      }
+      eventRow = { ...eventRow, ...update.$set };
+      return { ...eventRow };
     });
     t.mock.method(Booking, "findOne", () => ({
       session: async () => booking,
@@ -436,7 +458,7 @@ describe("Razorpay booking confirmation", () => {
     );
   });
 
-  test("refund task schema stores the captured payment safely", () => {
+  test("refund task schema stores the captured payment safely", async () => {
     const task = new RefundTask({
       booking: bookingId,
       orderId,
@@ -448,45 +470,310 @@ describe("Razorpay booking confirmation", () => {
     assert.equal(task.currency, "INR");
     assert.equal(task.amount, 50000);
     assert.equal(task.attempts, 0);
-    assert.equal(task.validateSync(), undefined);
+    await assert.doesNotReject(task.validate());
   });
 
-  test("concurrent webhook claims are rejected once one request owns the lease", async (t) => {
-    let claimed = false;
-    t.mock.method(WebhookEvent, "findOneAndUpdate", async () => {
-      if (claimed) return null;
-      claimed = true;
-      return {
-        eventId: "evt_concurrent",
-        eventType: "payment.captured",
-        status: "processing",
-        leaseExpiresAt: new Date(Date.now() + 60_000),
+  test("two simultaneous webhook claims permit only one owner", async (t) => {
+    let event;
+    t.mock.method(WebhookEvent, "findOneAndUpdate", async (filter, update, options) => {
+      if (options?.upsert) {
+        event ||= {
+          ...update.$setOnInsert,
+          leaseExpiresAt: null,
+        };
+        return { ...event };
+      }
+
+      const now = new Date();
+      const status = event?.status;
+      const claimable =
+        event &&
+        (["pending", "failed"].includes(status) ||
+          !status ||
+          (status === "processing" && event.leaseExpiresAt <= now));
+      if (!claimable) return null;
+
+      event = {
+        ...event,
+        ...update.$set,
       };
+      return { ...event };
     });
-    t.mock.method(WebhookEvent, "findOne", async () => ({
-      eventId: "evt_concurrent",
-      status: "processing",
-      leaseExpiresAt: new Date(Date.now() + 60_000),
-    }));
+    t.mock.method(WebhookEvent, "findOne", async () => event && { ...event });
 
-    const [{ claimWebhookEvent }] = await Promise.all([
-      import("../src/services/webhookEventService.js"),
+    const [first, second] = await Promise.all([
+      claimWebhookEvent({ eventId: "evt_concurrent", eventType: "payment.captured" }),
+      claimWebhookEvent({ eventId: "evt_concurrent", eventType: "payment.captured" }),
     ]);
-    const first = await claimWebhookEvent({
-      eventId: "evt_concurrent",
-      eventType: "payment.captured",
-    });
-    const second = await claimWebhookEvent({
-      eventId: "evt_concurrent",
-      eventType: "payment.captured",
-    });
 
-    assert.equal(first.claimed, true);
-    assert.equal(second.claimed, false);
-    assert.equal(second.reason, "processing");
+    assert.equal([first, second].filter((claim) => claim.claimed).length, 1);
+    assert.notEqual(first.claimToken, second.claimToken);
+    assert.equal(event.status, "processing");
   });
 
-  test("refund reconciliation does not create another refund when Razorpay already has it", async () => {
+  test("an expired webhook lease can be reclaimed with a new token", async (t) => {
+    let event = {
+      eventId: "evt_expired",
+      eventType: "payment.captured",
+      status: "processing",
+      claimToken: "expired-token",
+      leaseExpiresAt: new Date(Date.now() - 1000),
+    };
+    t.mock.method(WebhookEvent, "findOneAndUpdate", async (filter, update, options) => {
+      if (options?.upsert) return { ...event };
+      if (
+        filter.eventId === event.eventId &&
+        filter.$or.some((clause) =>
+          clause.status === "processing" &&
+          event.status === "processing" &&
+            event.leaseExpiresAt <= clause.leaseExpiresAt.$not.$gt
+        )
+      ) {
+        event = { ...event, ...update.$set };
+        return { ...event };
+      }
+      return null;
+    });
+    t.mock.method(WebhookEvent, "findOne", async () => ({ ...event }));
+
+    const claim = await claimWebhookEvent({
+      eventId: event.eventId,
+      eventType: event.eventType,
+    });
+    assert.equal(claim.claimed, true);
+    assert.notEqual(claim.claimToken, "expired-token");
+  });
+
+  test("stale webhook workers cannot mark a reclaimed event processed or failed", async (t) => {
+    const event = {
+      eventId: "evt_reclaimed",
+      status: "processing",
+      claimToken: "new-token",
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+    };
+    const writes = [];
+    t.mock.method(WebhookEvent, "findOneAndUpdate", async (filter) => {
+      writes.push(filter);
+      if (
+        filter.eventId !== event.eventId ||
+        filter.claimToken !== event.claimToken ||
+        filter.status !== event.status
+      ) {
+        return null;
+      }
+      return event;
+    });
+
+    const processed = await markWebhookEventProcessed(event.eventId, "old-token");
+    const failed = await markWebhookEventFailed(
+      event.eventId,
+      "old-token",
+      new Error("stale worker")
+    );
+    assert.equal(processed, null);
+    assert.equal(failed, null);
+    assert.equal(event.status, "processing");
+    assert.equal(writes.length, 2);
+    assert.equal(writes[0].claimToken, "old-token");
+    assert.equal(writes[1].claimToken, "old-token");
+  });
+
+  test("two simultaneous refund claims permit only one owner", async (t) => {
+    let task = {
+      _id: "refund_concurrent",
+      status: "pending",
+      attempts: 0,
+      nextRetryAt: new Date(Date.now() - 1000),
+      leaseExpiresAt: null,
+    };
+    t.mock.method(RefundTask, "findOneAndUpdate", async (filter, update) => {
+      const now = new Date();
+      const canClaim =
+        task.attempts < filter.attempts.$lt &&
+        task.nextRetryAt <= filter.nextRetryAt.$lte &&
+        (task.status !== "processing" ||
+          task.leaseExpiresAt <= now);
+      if (!canClaim) return null;
+
+      task = {
+        ...task,
+        ...update[0].$set,
+        attempts: task.attempts + 1,
+      };
+      return { ...task };
+    });
+
+    const [first, second] = await Promise.all([
+      claimRefundTask(),
+      claimRefundTask(),
+    ]);
+
+    assert.equal([first, second].filter(Boolean).length, 1);
+    assert.ok(first?.claimToken || second?.claimToken);
+    assert.equal(task.status, "processing");
+  });
+
+  test("expired refund leases can be reclaimed with a new token", async (t) => {
+    let task = {
+      _id: "refund_expired",
+      status: "processing",
+      attempts: 1,
+      nextRetryAt: new Date(Date.now() - 60_000),
+      leaseExpiresAt: new Date(Date.now() - 1000),
+      claimToken: "expired-token",
+    };
+    t.mock.method(RefundTask, "findOneAndUpdate", async (_filter, update) => {
+      task = {
+        ...task,
+        ...update[0].$set,
+        attempts: task.attempts + 1,
+      };
+      return { ...task };
+    });
+
+    const claim = await claimRefundTask();
+    assert.equal(claim.status, "processing");
+    assert.notEqual(claim.claimToken, "expired-token");
+    assert.equal(claim.attempts, 2);
+  });
+
+  test("stale refund workers cannot overwrite a newer claim", async (t) => {
+    let currentTask = {
+      _id: "refund_reclaimed",
+      status: "processing",
+      claimToken: "new-token",
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+    };
+    let updateFilter;
+    t.mock.method(RefundTask, "exists", async () => null);
+    t.mock.method(RefundTask, "updateOne", async (filter) => {
+      updateFilter = filter;
+      if (filter.claimToken !== currentTask.claimToken) {
+        return { matchedCount: 0 };
+      }
+      currentTask = { ...currentTask, status: "failed" };
+      return { matchedCount: 1 };
+    });
+
+    const result = await processRefundTask(
+      {
+        _id: currentTask._id,
+        paymentId,
+        attempts: 1,
+        claimToken: "old-token",
+      },
+      async () => {
+        throw new Error("A stale worker must not reach Razorpay.");
+      }
+    );
+
+    assert.equal(result.status, "stale");
+    assert.equal(updateFilter.claimToken, "old-token");
+    assert.equal(currentTask.status, "processing");
+  });
+
+  test("failed refund attempts remain retryable after backoff", async (t) => {
+    let task = {
+      _id: "refund_retry",
+      status: "processing",
+      attempts: 1,
+      paymentId,
+      claimToken: "first-token",
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      nextRetryAt: new Date(Date.now() - 1000),
+    };
+    t.mock.method(RefundTask, "updateOne", async (filter, update) => {
+      if (filter.claimToken !== task.claimToken) return { matchedCount: 0 };
+      task = { ...task, ...update.$set };
+      return { matchedCount: 1 };
+    });
+
+    const failed = await processRefundTask(task, async () => {
+      throw new Error("temporary Razorpay network failure");
+    });
+    assert.equal(failed.status, "failed");
+    assert.equal(task.status, "failed");
+    assert.match(task.lastError, /temporary Razorpay network failure/);
+
+    t.mock.method(RefundTask, "findOneAndUpdate", async (_filter, update) => {
+      task = {
+        ...task,
+        ...update[0].$set,
+        attempts: task.attempts + 1,
+      };
+      return { ...task };
+    });
+    const retried = await claimRefundTask(new Date(Date.now() + 60_000));
+    assert.equal(retried.status, "processing");
+    assert.equal(retried.attempts, 2);
+    assert.notEqual(retried.claimToken, "first-token");
+  });
+
+  test("refund worker prevents overlapping cycles and resumes after errors", async () => {
+    let releaseCycle;
+    let calls = 0;
+    const worker = createRefundWorker({
+      runOnce: async () => {
+        calls += 1;
+        if (calls === 1) {
+          await new Promise((resolve) => {
+            releaseCycle = resolve;
+          });
+        } else if (calls === 2) {
+          throw new Error("transient cycle error");
+        }
+      },
+    });
+
+    const firstCycle = worker.runCycle();
+    const overlappingCycle = await worker.runCycle();
+    assert.equal(overlappingCycle, false);
+    releaseCycle();
+    assert.equal(await firstCycle, true);
+
+    assert.equal(await worker.runCycle(), true);
+    assert.equal(await worker.runCycle(), true);
+    assert.equal(calls, 3);
+  });
+
+  test("startup waits for MongoDB before starting the worker and listening", async () => {
+    const events = [];
+    let finishConnect;
+    let rejectConnect = true;
+    const connect = () => {
+      events.push("connect");
+      if (rejectConnect) {
+        rejectConnect = false;
+        return Promise.reject(new Error("database unavailable"));
+      }
+      return new Promise((resolve) => {
+        finishConnect = resolve;
+      });
+    };
+    const startWorker = async () => {
+      events.push("worker");
+    };
+    const listen = () => {
+      events.push("listen");
+      return "server";
+    };
+
+    await assert.rejects(
+      startBackend({ connect, startWorker, listen }),
+      /database unavailable/
+    );
+    assert.deepEqual(events, ["connect"]);
+
+    const startup = startBackend({ connect, startWorker, listen });
+    assert.deepEqual(events, ["connect", "connect"]);
+    finishConnect();
+    const concurrentStartup = startBackend({ connect, startWorker, listen });
+    assert.equal(await startup, "server");
+    assert.equal(await concurrentStartup, "server");
+    assert.deepEqual(events, ["connect", "connect", "worker", "listen"]);
+  });
+
+  test("refund reconciliation does not create another refund when Razorpay already has it", async (t) => {
     const task = {
       _id: "refund_task_1",
       paymentId,
@@ -494,6 +781,7 @@ describe("Razorpay booking confirmation", () => {
       amount: 50000,
       booking: bookingId,
       attempts: 1,
+      claimToken: "refund-token",
     };
     let refundCalls = 0;
     const razorpay = {
@@ -506,6 +794,7 @@ describe("Razorpay booking confirmation", () => {
       },
     };
 
+    t.mock.method(RefundTask, "exists", async () => ({ _id: task._id }));
     const refund = await reconcileRefundTask(task, razorpay);
     assert.equal(refund.id, "rfnd_existing");
     assert.equal(refund.status, "processed");
@@ -519,6 +808,7 @@ describe("Razorpay booking confirmation", () => {
       paymentId,
       amount: 50000,
       attempts: 1,
+      claimToken: "refund-token",
     };
     const updates = [];
     t.mock.method(RefundTask, "updateOne", async (_filter, update) => {
@@ -527,6 +817,7 @@ describe("Razorpay booking confirmation", () => {
     });
     t.mock.method(Booking, "updateOne", async () => ({}));
 
+    t.mock.method(RefundTask, "exists", async () => ({ _id: task._id }));
     const pendingTask = { ...task };
     const pendingReconciler = await reconcileRefundTask(
       pendingTask,

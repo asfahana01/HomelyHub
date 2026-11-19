@@ -9,6 +9,7 @@ import { propertyRouter } from "./routes/propertyRouter.js";
 import { bookingRouter } from "./routes/bookingRouter.js";
 import { tripRouter } from "./routes/tripRouter.js";
 import { generalLimiter, sanitizeNoSql } from "./utils/security.js";
+import { startBackend } from "./utils/startup.js";
 
 dotenv.config();
 
@@ -119,24 +120,27 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Connect to Database
-connectDB();
-
 if (process.env.NODE_ENV !== "test") {
   const refundInterval =
     Number(process.env.REFUND_WORKER_INTERVAL_MS) || 60 * 1000;
-  import("./services/refundWorker.js")
-    .then(({ startRefundWorker }) => startRefundWorker({ intervalMs: refundInterval }))
+  startBackend({
+    connect: connectDB,
+    startWorker: async () => {
+      const { startRefundWorker } = await import("./services/refundWorker.js");
+      await startRefundWorker({ intervalMs: refundInterval });
+    },
+    listen: () =>
+      app.listen(PORT, () => {
+        console.log(`Server is running on port ${PORT}`);
+      }),
+  })
     .catch((error) => {
       console.error(
-        "Unable to start refund reconciliation worker:",
+        "Backend startup failed:",
         error instanceof Error ? error.message : "Unknown error"
       );
+      process.exitCode = 1;
     });
-
-  app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-  });
 }
 
 export default app;

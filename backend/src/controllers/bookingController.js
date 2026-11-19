@@ -313,6 +313,7 @@ const razorpayWebhook = async (req, res) => {
   if (!claim.claimed) {
     return res.status(200).json({ status: "success" });
   }
+  const { claimToken } = claim;
 
   try {
     if (eventType === "payment.captured") {
@@ -339,10 +340,10 @@ const razorpayWebhook = async (req, res) => {
       await markPaymentFailed({ orderId: payment.order_id });
     }
 
-    await markWebhookEventProcessed(eventId);
+    await markWebhookEventProcessed(eventId, claimToken);
     return res.status(200).json({ status: "success" });
   } catch (error) {
-    await markWebhookEventFailed(eventId, error);
+    await markWebhookEventFailed(eventId, claimToken, error);
     console.error(
       `Webhook event ${eventId} processing failed:`,
       error instanceof Error ? error.message : "Unknown error"

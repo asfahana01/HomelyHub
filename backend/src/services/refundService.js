@@ -1,11 +1,24 @@
 import { RefundTask } from "../models/refundTaskModel.js";
 import { Booking } from "../models/bookingModel.js";
 import { getRazorpayInstance } from "../utils/razorpay.js";
+import crypto from "node:crypto";
 
 export const REFUND_LEASE_MS = 2 * 60 * 1000;
 
 const retryDelay = (attempts) =>
   Math.min(60 * 60 * 1000, 30_000 * 2 ** Math.max(0, attempts - 1));
+
+const assertRefundClaimOwned = async (task, claimToken) => {
+  const owned = await RefundTask.exists({
+    _id: task._id,
+    status: "processing",
+    claimToken,
+    leaseExpiresAt: { $gt: new Date() },
+  });
+  if (!owned) {
+    throw new Error("Refund task processing lease is no longer owned.");
+  }
+};
 
 export const createRefundTask = async ({
   booking,
@@ -59,8 +72,14 @@ export const createRefundTask = async ({
 
 export const reconcileRefundTask = async (
   task,
-  razorpay = getRazorpayInstance()
+  razorpay = getRazorpayInstance(),
+  claimToken = task?.claimToken
 ) => {
+  if (!claimToken || claimToken !== task.claimToken) {
+    throw new Error("Refund task claim token is missing or does not match.");
+  }
+  await assertRefundClaimOwned(task, claimToken);
+
   const payment = await razorpay.payments.fetch(task.paymentId);
   if (payment.status !== "captured" && payment.status !== "refunded") {
     throw new Error(`Payment ${task.paymentId} is not captured/refunded.`);
@@ -72,10 +91,7 @@ export const reconcileRefundTask = async (
       task.refundId
     );
     if (refund.status === "processed") return refund;
-    if (refund.status === "failed") {
-      throw new Error(`Razorpay refund ${task.refundId} failed.`);
-    }
-    return refund;
+    if (refund.status !== "failed") return refund;
   }
 
   const existing = await razorpay.payments.fetchMultipleRefund(task.paymentId, {
@@ -86,10 +102,12 @@ export const reconcileRefundTask = async (
     (refund) =>
       refund.payment_id === task.paymentId &&
       Number(refund.amount) === task.amount &&
-      refund.currency === "INR"
+      refund.currency === "INR" &&
+      refund.status !== "failed"
   );
   if (match) return match;
 
+  await assertRefundClaimOwned(task, claimToken);
   return razorpay.payments.refund(task.paymentId, {
     amount: task.amount,
     speed: "normal",
@@ -103,6 +121,7 @@ export const reconcileRefundTask = async (
 
 export const claimRefundTask = async (now = new Date()) => {
   const maxAttempts = Number(process.env.REFUND_MAX_ATTEMPTS) || 10;
+  const claimToken = crypto.randomUUID();
   return RefundTask.findOneAndUpdate(
     {
       status: { $in: ["pending", "processing", "failed"] },
@@ -118,26 +137,56 @@ export const claimRefundTask = async (now = new Date()) => {
         $set: {
           status: "processing",
           leaseExpiresAt: new Date(Date.now() + REFUND_LEASE_MS),
+          claimToken,
           processingStartedAt: now,
           attempts: { $add: ["$attempts", 1] },
           lastError: "",
         },
       },
     ],
-    { sort: { nextRetryAt: 1, createdAt: 1 }, new: true }
+    { sort: { nextRetryAt: 1, createdAt: 1 }, returnDocument: "after" }
   );
 };
 
-export const processRefundTask = async (task) => {
-  try {
-    const refund = await reconcileRefundTask(task);
-    if (!refund) return { status: "pending" };
+export const processRefundTask = async (
+  task,
+  reconcile = reconcileRefundTask
+) => {
+  const claimToken = task?.claimToken;
+  if (!task?._id || !claimToken) {
+    return { status: "stale", error: "Refund task claim token is missing." };
+  }
 
-    if (refund.status === "processed") {
-      await RefundTask.updateOne(
+  try {
+    const refund = await reconcile(task, undefined, claimToken);
+    if (!refund) {
+      const update = await RefundTask.updateOne(
         {
           _id: task._id,
           status: "processing",
+          claimToken,
+          leaseExpiresAt: { $gt: new Date() },
+        },
+        {
+          $set: {
+            status: "pending",
+            leaseExpiresAt: null,
+            claimToken: null,
+            nextRetryAt: new Date(Date.now() + retryDelay(task.attempts)),
+          },
+        }
+      );
+      return update.matchedCount
+        ? { status: "pending" }
+        : { status: "stale" };
+    }
+
+    if (refund.status === "processed") {
+      const update = await RefundTask.updateOne(
+        {
+          _id: task._id,
+          status: "processing",
+          claimToken,
           leaseExpiresAt: { $gt: new Date() },
         },
         {
@@ -145,10 +194,13 @@ export const processRefundTask = async (task) => {
             status: "processed",
             refundId: refund.id,
             leaseExpiresAt: null,
+            claimToken: null,
             lastError: "",
           },
         }
       );
+      if (!update.matchedCount) return { status: "stale" };
+
       await Booking.updateOne(
         {
           _id: task.booking,
@@ -160,36 +212,54 @@ export const processRefundTask = async (task) => {
     }
 
     if (refund.status === "pending") {
-      await RefundTask.updateOne(
-        { _id: task._id, status: "processing" },
+      const update = await RefundTask.updateOne(
+        {
+          _id: task._id,
+          status: "processing",
+          claimToken,
+          leaseExpiresAt: { $gt: new Date() },
+        },
         {
           $set: {
             status: "pending",
             refundId: refund.id,
             leaseExpiresAt: null,
+            claimToken: null,
             nextRetryAt: new Date(Date.now() + retryDelay(task.attempts)),
             lastError: "",
           },
         }
       );
-      return { status: "pending", refundId: refund.id };
+      return update.matchedCount
+        ? { status: "pending", refundId: refund.id }
+        : { status: "stale" };
     }
 
     throw new Error(`Razorpay refund returned status ${refund.status}.`);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unknown refund processing error";
-    await RefundTask.updateOne(
-      { _id: task._id, status: "processing" },
+    const update = await RefundTask.updateOne(
+      {
+        _id: task._id,
+        status: "processing",
+        claimToken,
+        leaseExpiresAt: { $gt: new Date() },
+      },
       {
         $set: {
           status: "failed",
           leaseExpiresAt: null,
+          claimToken: null,
+          refundId: null,
           nextRetryAt: new Date(Date.now() + retryDelay(task.attempts)),
           lastError: message.slice(0, 2000),
         },
       }
     );
+    if (!update.matchedCount) {
+      return { status: "stale" };
+    }
     console.error(
       `Refund task ${task._id} failed for payment ${task.paymentId}: ${message}`
     );
