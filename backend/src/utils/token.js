@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import { AuthSession, RefreshToken } from "../models/authSessionModel.js";
 
-const USER_API_PATH = "/api/v1/rent/user";
+const USER_API_PATH = "/api/v1/rent";
 
 const durationToMs = (value) => {
   const match = /^(\d+)([smhd])$/.exec(value);

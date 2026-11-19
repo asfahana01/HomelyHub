@@ -115,16 +115,20 @@ const revokeSession = async (sessionId) => {
 };
 
 const clearAuthCookies = (res) => {
-  const options = {
-    httpOnly: true,
-    sameSite: "strict",
-    secure: process.env.NODE_ENV === "production",
-    path: "/api/v1/rent/user",
-  };
-  res.clearCookie("jwt", options);
-  res.clearCookie("refreshToken", options);
-};
+  const paths = ["/api/v1/rent", "/api/v1/rent/user"];
 
+  for (const path of paths) {
+    const options = {
+      httpOnly: true,
+      sameSite: "strict",
+      secure: process.env.NODE_ENV === "production",
+      path,
+    };
+
+    res.clearCookie("jwt", options);
+    res.clearCookie("refreshToken", options);
+  }
+};
 const logout = async (req, res, next) => {
   try {
     let sessionId;
