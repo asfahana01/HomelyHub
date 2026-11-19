@@ -91,6 +91,31 @@ const capturedEvent = (payment = makePayment()) => ({
   payload: { payment: { entity: payment } },
 });
 
+const refundEvent = (event, status, overrides = {}) => ({
+  event,
+  payload: {
+    refund: {
+      entity: {
+        id: "rfnd_test_123",
+        payment_id: paymentId,
+        amount: 50000,
+        currency: "INR",
+        status,
+        notes: { homelyhub_refund_task: "refund_task_123" },
+        ...overrides,
+      },
+    },
+    payment: {
+      entity: {
+        id: paymentId,
+        order_id: orderId,
+        amount: 50000,
+        currency: "INR",
+      },
+    },
+  },
+});
+
 const setWebhookSecret = (t) => {
   const previous = process.env.RAZORPAY_WEBHOOK_SECRET;
   process.env.RAZORPAY_WEBHOOK_SECRET = webhookSecret;
@@ -307,6 +332,79 @@ describe("Razorpay booking confirmation", () => {
     assert.equal(firstResponse.statusCode, 200);
     assert.equal(duplicateResponse.statusCode, 200);
     assert.equal(propertyWrites, 1);
+  });
+
+  test("processes signed refund webhooks once and deduplicates redelivery", async (t) => {
+    setWebhookSecret(t);
+    withFakeTransactions(t);
+    const task = {
+      _id: "refund_task_123",
+      booking: bookingId,
+      orderId,
+      paymentId,
+      amount: 50000,
+      currency: "INR",
+      reason: "customer_cancellation",
+      status: "pending",
+      refundId: null,
+    };
+    let eventRow;
+    let refundTaskWrites = 0;
+    let bookingWrites = 0;
+    t.mock.method(WebhookEvent, "findOne", async () =>
+      eventRow ? { ...eventRow } : null
+    );
+    t.mock.method(
+      WebhookEvent,
+      "findOneAndUpdate",
+      async (filter, update, options) => {
+        if (options?.upsert) {
+          eventRow ||= { ...update.$setOnInsert, status: "pending" };
+          return { ...eventRow };
+        }
+        if (filter.$or) {
+          if (!["pending", "failed"].includes(eventRow?.status)) return null;
+          eventRow = { ...eventRow, ...update.$set };
+          return { ...eventRow };
+        }
+        if (
+          eventRow?.status !== "processing" ||
+          eventRow.claimToken !== filter.claimToken
+        ) {
+          return null;
+        }
+        eventRow = { ...eventRow, ...update.$set };
+        return { ...eventRow };
+      }
+    );
+    t.mock.method(RefundTask, "findOne", () => ({
+      session: async () => task,
+    }));
+    t.mock.method(RefundTask, "updateOne", async (_filter, update) => {
+      refundTaskWrites += 1;
+      Object.assign(task, update.$set);
+      return { matchedCount: 1 };
+    });
+    t.mock.method(Booking, "updateOne", async () => {
+      bookingWrites += 1;
+      return { matchedCount: 1 };
+    });
+
+    const request = signedWebhookRequest(
+      refundEvent("refund.processed", "processed"),
+      "evt_refund_processed"
+    );
+    const first = makeResponse();
+    const duplicate = makeResponse();
+    await razorpayWebhook(request, first);
+    await razorpayWebhook(request, duplicate);
+
+    assert.equal(first.statusCode, 200);
+    assert.equal(duplicate.statusCode, 200);
+    assert.equal(task.status, "processed");
+    assert.equal(task.refundId, "rfnd_test_123");
+    assert.equal(refundTaskWrites, 1);
+    assert.equal(bookingWrites, 1);
   });
 
   test("prevents two users from holding overlapping dates but permits an expired hold", async (t) => {
@@ -597,8 +695,8 @@ describe("Razorpay booking confirmation", () => {
 
       task = {
         ...task,
-        ...update[0].$set,
-        attempts: task.attempts + 1,
+        ...update.$set,
+        attempts: task.attempts + update.$inc.attempts,
       };
       return { ...task };
     });
@@ -625,8 +723,8 @@ describe("Razorpay booking confirmation", () => {
     t.mock.method(RefundTask, "findOneAndUpdate", async (_filter, update) => {
       task = {
         ...task,
-        ...update[0].$set,
-        attempts: task.attempts + 1,
+        ...update.$set,
+        attempts: task.attempts + update.$inc.attempts,
       };
       return { ...task };
     });
@@ -698,8 +796,8 @@ describe("Razorpay booking confirmation", () => {
     t.mock.method(RefundTask, "findOneAndUpdate", async (_filter, update) => {
       task = {
         ...task,
-        ...update[0].$set,
-        attempts: task.attempts + 1,
+        ...update.$set,
+        attempts: task.attempts + update.$inc.attempts,
       };
       return { ...task };
     });
@@ -776,9 +874,11 @@ describe("Razorpay booking confirmation", () => {
   test("refund reconciliation does not create another refund when Razorpay already has it", async (t) => {
     const task = {
       _id: "refund_task_1",
+      orderId,
       paymentId,
       refundId: "rfnd_existing",
       amount: 50000,
+      currency: "INR",
       booking: bookingId,
       attempts: 1,
       claimToken: "refund-token",
@@ -786,8 +886,20 @@ describe("Razorpay booking confirmation", () => {
     let refundCalls = 0;
     const razorpay = {
       payments: {
-        fetch: async () => ({ id: paymentId, status: "captured" }),
-        fetchRefund: async () => ({ id: "rfnd_existing", status: "processed" }),
+        fetch: async () => ({
+          id: paymentId,
+          order_id: orderId,
+          amount: 50000,
+          currency: "INR",
+          status: "captured",
+        }),
+        fetchRefund: async () => ({
+          id: "rfnd_existing",
+          payment_id: paymentId,
+          amount: 50000,
+          currency: "INR",
+          status: "processed",
+        }),
         refund: async () => {
           refundCalls += 1;
         },
@@ -804,9 +916,11 @@ describe("Razorpay booking confirmation", () => {
   test("refund task uses pending, processed, and failed state transitions", async (t) => {
     const task = {
       _id: "refund_task_1",
+      orderId,
       booking: bookingId,
       paymentId,
       amount: 50000,
+      currency: "INR",
       attempts: 1,
       claimToken: "refund-token",
     };
@@ -823,7 +937,13 @@ describe("Razorpay booking confirmation", () => {
       pendingTask,
       {
         payments: {
-          fetch: async () => ({ id: paymentId, status: "captured" }),
+          fetch: async () => ({
+            id: paymentId,
+            order_id: orderId,
+            amount: 50000,
+            currency: "INR",
+            status: "captured",
+          }),
           fetchMultipleRefund: async () => ({
             items: [
               {
@@ -835,6 +955,13 @@ describe("Razorpay booking confirmation", () => {
               },
             ],
           }),
+          fetchRefund: async (_paymentId, refundId) => ({
+            id: refundId,
+            payment_id: paymentId,
+            amount: 50000,
+            currency: "INR",
+            status: "pending",
+          }),
         },
       }
     );
@@ -844,7 +971,13 @@ describe("Razorpay booking confirmation", () => {
       task,
       {
         payments: {
-          fetch: async () => ({ id: paymentId, status: "captured" }),
+          fetch: async () => ({
+            id: paymentId,
+            order_id: orderId,
+            amount: 50000,
+            currency: "INR",
+            status: "captured",
+          }),
           fetchMultipleRefund: async () => ({
             items: [
               {
@@ -855,6 +988,13 @@ describe("Razorpay booking confirmation", () => {
                 status: "processed",
               },
             ],
+          }),
+          fetchRefund: async (_paymentId, refundId) => ({
+            id: refundId,
+            payment_id: paymentId,
+            amount: 50000,
+            currency: "INR",
+            status: "processed",
           }),
         },
       }

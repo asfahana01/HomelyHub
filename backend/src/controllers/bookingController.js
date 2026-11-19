@@ -19,6 +19,11 @@ import {
   markWebhookEventFailed,
   markWebhookEventProcessed,
 } from "../services/webhookEventService.js";
+import {
+  getBookingCancellationPolicy,
+  processRefundWebhook,
+  requestBookingCancellation,
+} from "../services/refundService.js";
 import { parseRazorpayWebhookEvent } from "../utils/validation.js";
 import { logger } from "../utils/logger.js";
 
@@ -369,6 +374,22 @@ const razorpayWebhook = async (req, res) => {
         );
       }
       await markPaymentFailed({ orderId: payment.order_id });
+    } else if (
+      eventType === "refund.processed" ||
+      eventType === "refund.failed"
+    ) {
+      const refund = event.payload?.refund?.entity;
+      const payment = event.payload?.payment?.entity;
+      const result = await processRefundWebhook({
+        eventType,
+        refund,
+        payment,
+      });
+      if (result.status === "unmatched") {
+        logger.warn("payment.refund_webhook_unmatched", {
+          requestId: req.requestId,
+        });
+      }
     }
 
     await markWebhookEventProcessed(eventId, claimToken);
@@ -389,6 +410,42 @@ const razorpayWebhook = async (req, res) => {
   }
 };
 
+const cancelBooking = async (req, res) => {
+  try {
+    const result = await requestBookingCancellation({
+      bookingId: req.params.bookingId,
+      userId: req.user._id,
+    });
+    return res.status(202).json({
+      success: true,
+      message: "Cancellation accepted. Your refund is being processed.",
+      data: {
+        booking: result.booking,
+        refund: {
+          status: "pending",
+          amount: result.refundTask.amount / 100,
+          currency: result.refundTask.currency,
+        },
+        cancellationPolicy: result.policy,
+      },
+    });
+  } catch (error) {
+    const statusCode = error.statusCode || 500;
+    logger.warn("booking.cancellation_request_failed", {
+      requestId: req.requestId,
+      statusCode,
+      errorName: error.name || "Error",
+    });
+    return res.status(statusCode).json({
+      success: false,
+      message:
+        statusCode < 500
+          ? error.message
+          : "Unable to process cancellation right now. Please try again.",
+    });
+  }
+};
+
 // 4. GET MY BOOKINGS - retrieve authenticated user's confirmed bookings
 const getUserBookings = async (req, res) => {
   try {
@@ -401,6 +458,7 @@ const getUserBookings = async (req, res) => {
       status: "success",
       data: {
         bookings,
+        cancellationPolicy: getBookingCancellationPolicy(),
       },
     });
   } catch (error) {
@@ -433,6 +491,7 @@ const getBookingDetails = async (req, res) => {
       status: "success",
       data: {
         bookings: booking,
+        cancellationPolicy: getBookingCancellationPolicy(),
       },
     });
   } catch (error) {
@@ -449,4 +508,5 @@ export {
   createOrder,
   verifyPayment,
   razorpayWebhook,
+  cancelBooking,
 };

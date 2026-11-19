@@ -35,6 +35,17 @@ const bookingSchema = new mongoose.Schema(
       ],
       default: "pending",
     },
+    cancellationStatus: {
+      type: String,
+      enum: ["none", "refund_pending", "cancelled"],
+      default: "none",
+    },
+    cancellationRequestedAt: {
+      type: Date,
+    },
+    cancelledAt: {
+      type: Date,
+    },
     confirmingPaymentId: {
       type: String,
     },

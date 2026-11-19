@@ -16,7 +16,15 @@ const refundTaskSchema = new mongoose.Schema(
       required: true,
       unique: true,
     },
+    reason: {
+      type: String,
+      enum: ["booking_unavailable", "customer_cancellation"],
+      default: "booking_unavailable",
+    },
     refundId: {
+      type: String,
+    },
+    refundIdempotencyKey: {
       type: String,
     },
     amount: {
@@ -58,7 +66,6 @@ const refundTaskSchema = new mongoose.Schema(
 );
 
 refundTaskSchema.index({ status: 1, nextRetryAt: 1 });
-refundTaskSchema.index({ paymentId: 1 }, { unique: true });
 
 const RefundTask =
   mongoose.models.RefundTask ||

@@ -1,0 +1,75 @@
+.booking-cancellation {
+  margin-top: 0.75rem;
+}
+
+.booking-policy,
+.booking-status {
+  margin: 0.5rem 0;
+  font-size: 0.9rem;
+}
+
+.booking-status-pending {
+  color: #8a5700;
+  font-weight: 600;
+}
+
+.booking-status-cancelled {
+  color: #525252;
+  font-weight: 600;
+}
+
+.booking-cancel-button,
+.booking-cancel-secondary {
+  border: 0;
+  border-radius: 6px;
+  padding: 0.6rem 1rem;
+  font-weight: 600;
+}
+
+.booking-cancel-button {
+  background: #8b1e2d;
+  color: #fff;
+}
+
+.booking-cancel-button:disabled,
+.booking-cancel-secondary:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.booking-cancel-secondary {
+  background: #e8e8e8;
+  color: #222;
+}
+
+.booking-cancel-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(0 0 0 / 55%);
+}
+
+.booking-cancel-dialog {
+  width: min(100%, 32rem);
+  border-radius: 12px;
+  padding: 1.5rem;
+  background: #fff;
+  color: #222;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 25%);
+}
+
+.booking-cancel-dialog h2 {
+  margin-top: 0;
+  font-size: 1.3rem;
+}
+
+.booking-cancel-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}

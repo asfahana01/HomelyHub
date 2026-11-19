@@ -272,5 +272,32 @@ export const parseRazorpayWebhookEvent = (value) => {
     }).passthrough().parse(value);
   }
 
+  if (event.event === "refund.processed" || event.event === "refund.failed") {
+    const status = event.event === "refund.processed" ? "processed" : "failed";
+    return z.object({
+      event: z.literal(event.event),
+      payload: z.object({
+        refund: z.object({
+          entity: z.object({
+            id: z.string().regex(/^rfnd_[A-Za-z0-9_]+$/).max(64),
+            payment_id: paymentId,
+            amount: z.number().int().positive(),
+            currency: z.literal("INR"),
+            status: z.literal(status),
+            notes: z.record(z.string(), z.string()).optional(),
+          }).passthrough(),
+        }).passthrough(),
+        payment: z.object({
+          entity: z.object({
+            id: paymentId,
+            order_id: orderId,
+            amount: z.number().int().positive(),
+            currency: z.literal("INR"),
+          }).passthrough(),
+        }).passthrough(),
+      }).passthrough(),
+    }).passthrough().parse(value);
+  }
+
   return event;
 };

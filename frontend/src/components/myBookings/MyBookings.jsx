@@ -1,10 +1,10 @@
-import React, { useEffect, useState } from "react";
+import { useEffect } from "react";
 import "../../css/MyBookings.css";
 import ProgressSteps from "../ProgressSteps";
 import { useNavigate } from "react-router-dom";
 import LoadingSpinner from "../LoadingSpinner";
-
-import {useDispatch, useSelector} from "react-redux";
+import BookingCancellationControls from "./BookingCancellationControls";
+import { useDispatch, useSelector } from "react-redux";
 import { fetchBookingDetails, fetchUserBookings } from "../../store/Booking/booking-action";
 
 
@@ -12,15 +12,15 @@ import { fetchBookingDetails, fetchUserBookings } from "../../store/Booking/book
 const MyBookings = () => {
   const navigate = useNavigate();
   const dispatch = useDispatch();
-  const {bookings , loading} = useSelector((state)=> state.booking);
+  const { bookings, loading, cancellationPolicy } = useSelector(
+    (state) => state.booking
+  );
 
   
   useEffect(() => {
     // fetch the user bookings here and set them above.
     dispatch(fetchUserBookings())
   }, [dispatch]);
-
-  console.log(bookings);
 
   const handleBookingClick = (bookingId) => {
     // TODO: fetch this booking's details here if you need to.
@@ -81,7 +81,7 @@ const MyBookings = () => {
                       </span>
                       {new Date(booking.fromDate).toLocaleDateString()}
                     </span>
-                    <span class="material-symbols-outlined icon">
+                    <span className="material-symbols-outlined icon">
                       arrow_forward
                     </span>
                     <span className="info">
@@ -92,9 +92,13 @@ const MyBookings = () => {
                     </span>
                   </div>
                   <h5 className="booking-price">
-                    <span class="material-symbols-outlined">payments</span>{" "}
+                    <span className="material-symbols-outlined">payments</span>{" "}
                     Total Price :&#8377; {booking.price}
                   </h5>
+                  <BookingCancellationControls
+                    booking={booking}
+                    cancellationPolicy={cancellationPolicy}
+                  />
                 </div>
               </div>
             </div>

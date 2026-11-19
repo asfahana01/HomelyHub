@@ -5,6 +5,7 @@ import {
   createOrder,
   verifyPayment,
   razorpayWebhook,
+  cancelBooking,
 } from "../controllers/bookingController.js";
 import { protect } from "../controllers/authController.js";
 import { paymentLimiter } from "../utils/security.js";
@@ -22,6 +23,14 @@ bookingRouter.get(
   protect,
   validateRequest(requestSchemas.bookingIdParam, "params"),
   getBookingDetails
+);
+bookingRouter.post(
+  "/:bookingId/cancel",
+  protect,
+  paymentLimiter,
+  validateRequest(requestSchemas.bookingIdParam, "params"),
+  validateRequest(requestSchemas.emptyBody),
+  cancelBooking
 );
 bookingRouter.post(
   "/create-order",

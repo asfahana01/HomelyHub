@@ -103,6 +103,9 @@ GROQ_API_KEY=gsk_your_groq_api_key
 RAZORPAY_KEY_ID=rzp_test_your_razorpay_key_id
 RAZORPAY_KEY_SECRET=your_razorpay_key_secret
 RAZORPAY_WEBHOOK_SECRET=your_razorpay_webhook_secret
+REFUND_WORKER_INTERVAL_MS=60000
+REFUND_MAX_ATTEMPTS=10
+BOOKING_CANCELLATION_CUTOFF_HOURS=24
 ```
 
 ---
@@ -155,3 +158,19 @@ npm run build
 - **Timing-Safe HMAC Verification**: Razorpay payment and webhook signatures are validated using `crypto.timingSafeEqual`.
 - **Atomic Booking Concurrency**: Prevents double-booking via atomic MongoDB queries (`$not: { $elemMatch: { ... } }`).
 - **Safe Archiving Policy**: Properties with active reservations cannot be deleted; they are archived to preserve guest itineraries and historical accounting records.
+
+## Booking cancellations and refunds
+
+Customers can request cancellation from **My Bookings** or a booking's details page. The authenticated endpoint is `POST /api/v1/rent/user/booking/:bookingId/cancel`. The backend verifies booking ownership and the captured Razorpay payment, then atomically changes the booking to `refund_pending`, creates one refund task per payment, and releases the property dates. The full refund is calculated from the stored booking amount; clients cannot choose the amount.
+
+The default policy is a full refund when cancellation is requested at least 24 hours before check-in. Configure `BOOKING_CANCELLATION_CUTOFF_HOURS` in the backend environment to change that cutoff. Refund processing requires MongoDB transactions (a replica set or compatible cluster). The worker uses Razorpay's `X-Refund-Idempotency` header for safe retries and only marks a refund processed after a subsequent Razorpay refund fetch or a verified `refund.processed` webhook.
+
+Configure the Razorpay webhook URL as `https://<your-api-host>/api/v1/rent/user/booking/webhook`, set its secret to the same value as `RAZORPAY_WEBHOOK_SECRET`, and subscribe to `payment.captured`, `payment.failed`, `refund.processed`, and `refund.failed`. The endpoint must be publicly reachable by Razorpay; keep the API key secret and webhook secret server-side.
+
+### Test-mode refund check
+
+1. Use Razorpay **Test Mode** credentials and a MongoDB replica-set test database. Set `BOOKING_CANCELLATION_CUTOFF_HOURS` and `RAZORPAY_WEBHOOK_SECRET`.
+2. Configure the Test Mode webhook URL and the four events above. Use Razorpay's documented test payment details to complete a booking whose check-in is outside the cancellation cutoff.
+3. Open **My Bookings**, choose **Cancel booking**, and confirm. The API should return `202` with `refund.status: "pending"`; do not treat that response as proof that the refund completed.
+4. Wait for the refund worker and/or `refund.processed` webhook. Confirm the Razorpay Test Mode payment shows a refund and the booking changes to `refund_processed` (and `cancelled` for a customer cancellation).
+5. To check retry handling, use a test payment/refund that the gateway reports as failed, then confirm the task remains retryable and no duplicate refund is created. Never use live credentials for this test.

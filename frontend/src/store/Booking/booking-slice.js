@@ -12,7 +12,8 @@ import {createSlice} from "@reduxjs/toolkit";
 const initialState ={
     bookings:[],
     bookingDetails:{},
-    loading:false
+    loading:false,
+    cancellationPolicy: { cutoffHours: 24, refundPercentage: 100 },
 }
 
 const bookingSlice = createSlice({
@@ -21,6 +22,9 @@ const bookingSlice = createSlice({
     reducers:{
         setBookingRequest(state){
             state.loading=true;
+        },
+        setBookingPolicy(state, action) {
+            state.cancellationPolicy = action.payload;
         },
         //stores the bookings recvd from the api
         setBookings(state,action){
@@ -32,9 +36,24 @@ const bookingSlice = createSlice({
         },
         setBookingDetails:(state,action)=>{
             state.bookingDetails = action.payload.bookings;
-        }
+        },
+        updateBooking(state, action) {
+            const booking = action.payload;
+            state.bookings = state.bookings.map((item) =>
+                item._id === booking._id ? booking : item
+            );
+            if (state.bookingDetails?._id === booking._id) {
+                state.bookingDetails = booking;
+            }
+        },
     }
 })
 
-export const {setBookings, addBooking, setBookingDetails} = bookingSlice.actions;
+export const {
+    setBookings,
+    addBooking,
+    setBookingDetails,
+    setBookingPolicy,
+    updateBooking,
+} = bookingSlice.actions;
 export default bookingSlice;

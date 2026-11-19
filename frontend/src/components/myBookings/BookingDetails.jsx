@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from "react";
+import { useEffect } from "react";
 import "../../css/BookingDetails.css";
 import PropertyImg from "../propertyListing/PropertyImg";
 import { useParams } from "react-router-dom";
 import LoadingSpinner from "../LoadingSpinner";
-
+import BookingCancellationControls from "./BookingCancellationControls";
 import { fetchBookingDetails } from "../../store/Booking/booking-action";
 import { useDispatch, useSelector } from "react-redux";
 
@@ -13,7 +13,9 @@ const BookingDetails = () => {
 
   // STATIC: was `useSelector((state) => state.booking)`.
   // TODO: replace with your own booking details fetching logic.
-   const {bookingDetails} = useSelector((state)=> state.booking);
+  const { bookingDetails, cancellationPolicy } = useSelector(
+    (state) => state.booking
+  );
 
   useEffect(() => {
     // TODO: fetch the booking details for `bookingId` here and set them below.
@@ -21,8 +23,6 @@ const BookingDetails = () => {
     dispatch(fetchBookingDetails(bookingId))
 
   }, [dispatch,bookingId]);
-
-  console.log(bookingDetails);
 
   if (!bookingDetails || !bookingDetails.property) {
     return (
@@ -60,7 +60,7 @@ const BookingDetails = () => {
               </span>
               {new Date(bookingDetails.fromDate).toLocaleDateString()}
             </span>
-            <span class="material-symbols-outlined  stay-icon">
+            <span className="material-symbols-outlined stay-icon">
               arrow_forward
             </span>
             <span className="details">
@@ -81,6 +81,11 @@ const BookingDetails = () => {
           </div>
         </div>
       </div>
+      <BookingCancellationControls
+        booking={bookingDetails}
+        cancellationPolicy={cancellationPolicy}
+        onCancelled={() => dispatch(fetchBookingDetails(bookingId))}
+      />
       <PropertyImg images={bookingDetails.property.images} />
     </div>
   );
