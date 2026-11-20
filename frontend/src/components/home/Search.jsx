@@ -70,6 +70,8 @@ const Search = () => {
           id="addguest"
           placeholder="Add guests"
           type="number"
+          min="1"
+          value={keyword.guests || ""}
           onChange={(e) => updateKeyword("guests", +e.target.value)}
         />
         <span

@@ -39,15 +39,33 @@ const Header = () => {
           />
         </Link>
         {isHomePage && (
-          <div className="search_filter">
-            <Search />
+          <>
+            <div className="search_filter">
+              <Search />
+            </div>
             <Filter />
-
-            <Link to="/ai-trip-planner" className="ai-trip-link">
-              <span className="material-symbols-outlined">auto_awesome</span>
-              <span>Trip Genie</span>
-            </Link>
-          </div>
+            {isAuthenticated && user ? (
+              <Link
+                to="/ai-trip-planner"
+                className="ai-trip-link"
+              >
+                <span className="material-symbols-outlined">auto_awesome</span>
+                <span>Trip Genie</span>
+              </Link>
+            ) : (
+              <button
+                type="button"
+                className="ai-trip-link"
+                onClick={() => {
+                  toast.error("Please log in to access this feature.");
+                  navigate("/login?returnTo=%2Fai-trip-planner");
+                }}
+              >
+                <span className="material-symbols-outlined">auto_awesome</span>
+                <span>Trip Genie</span>
+              </button>
+            )}
+          </>
         )}
         {!isAuthenticated && !user && (
           <Link to="/login" className="login-tip">

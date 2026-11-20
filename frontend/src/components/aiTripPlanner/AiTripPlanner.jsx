@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Link } from "react-router-dom";
+import React, { useState, useRef, useEffect } from "react";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import toast from "react-hot-toast";
 import { getTripPlan } from "../../ai/tripPlanner";
 import "../../css/AiTripPlanner.css";
@@ -16,6 +16,8 @@ const INTEREST_OPTIONS = [
 ];
 
 const AiTripPlanner = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
   const [destination, setDestination] = useState("");
   const [budget, setBudget] = useState("");
   const [days, setDays] = useState("");
@@ -25,6 +27,16 @@ const AiTripPlanner = () => {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
 
+  const resultRef = useRef(null);
+
+  useEffect(() => {
+  if (result && resultRef.current) {
+    resultRef.current.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }
+}, [result]);
   const toggleInterest = (interest) => {
     if (interests.includes(interest)) {
       setInterests(interests.filter((item) => item !== interest));
@@ -54,7 +66,12 @@ const AiTripPlanner = () => {
       setResult(data);
       toast.success("Your trip plan is ready");
     } catch (error) {
-      toast.error("Could not create a trip plan, please try again");
+      if (error.response?.status === 401 || error._authRequired) {
+        toast.error("Please log in to access this feature.");
+        navigate(`/login?returnTo=${encodeURIComponent(location.pathname)}`);
+      } else {
+        toast.error("Could not create a trip plan, please try again");
+      }
       console.error(error);
     }
     setLoading(false);
@@ -171,8 +188,8 @@ const AiTripPlanner = () => {
       )}
 
       {result && (
-        <section className="trip-result">
-          <div className="trip-summary">
+        <section className="trip-result" ref={resultRef}>
+         <div className="trip-summary">
             <h2>
               Your {days}-day trip to {destination}
             </h2>

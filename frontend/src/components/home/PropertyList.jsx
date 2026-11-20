@@ -67,6 +67,25 @@ const PropertyList = () => {
       );
     }
   }, [properties]);
+  const previousPageRef = useRef(currentPage.page);
+
+useEffect(() => {
+  if (currentPage.page > previousPageRef.current) {
+    // Next page: scroll to the top
+    window.scrollTo({
+      top: 0,
+      behavior: "smooth",
+    });
+  } else if (currentPage.page < previousPageRef.current) {
+    // Previous page: scroll to the bottom
+    window.scrollTo({
+      top: document.documentElement.scrollHeight,
+      behavior: "smooth",
+    });
+  }
+
+  previousPageRef.current = currentPage.page;
+}, [currentPage.page]);
 
   return (
     <>
