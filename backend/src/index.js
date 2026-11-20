@@ -14,6 +14,8 @@ import { startBackend } from "./utils/startup.js";
 import { AppError } from "./utils/AppError.js";
 import { logger, requestIdMiddleware } from "./utils/logger.js";
 import { getEnvironmentIssues } from "./utils/env.js";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 dotenv.config();
 
@@ -25,6 +27,14 @@ if (envIssues.length) {
     `Missing or invalid required environment variables: ${envIssues.join(", ")}`
   );
 }
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const frontendDist = path.resolve(
+  __dirname,
+  "../../frontend/dist"
+);
 
 const app = express();
 app.use(requestIdMiddleware);
@@ -129,23 +139,31 @@ app.get("/ready", (_req, res) => {
   });
 });
 
-// Health check endpoint
-app.get("/", (req, res) => {
-  res.status(200).send("HomelyHub Backend server is running securely");
-});
-
 // API Routes
 app.use("/api/v1/rent/user", router);
 app.use("/api/v1/rent/listing", propertyRouter);
 app.use("/api/v1/rent/user/booking", bookingRouter);
 app.use("/api/v1/rent/trip", tripRouter);
 
-// 404 Route Handler
-app.all("/{*splat}", (req, res) => {
+// Return JSON for unknown API routes
+app.all("/api/{*splat}", (req, res) => {
   res.status(404).json({
     status: "fail",
     message: `Can't find ${req.originalUrl} on this server`,
   });
+});
+
+// Serve React production build
+app.use(express.static(frontendDist));
+
+// React Router fallback
+app.get("/{*splat}", (req, res, next) => {
+  res.sendFile(
+    path.join(frontendDist, "index.html"),
+    (error) => {
+      if (error) next(error);
+    }
+  );
 });
 
 // Centralized Error Handling Middleware (No stack trace or db leak in production)
