@@ -1,6 +1,18 @@
 import React, { useEffect, useState } from "react";
 import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
+import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import markerIcon from "leaflet/dist/images/marker-icon.png";
+import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
+import markerShadow from "leaflet/dist/images/marker-shadow.png";
+
+// Vite rewrites Leaflet's default icon URLs, so point the marker at the
+// bundled images explicitly.
+L.Icon.Default.mergeOptions({
+  iconUrl: markerIcon,
+  iconRetinaUrl: markerIcon2x,
+  shadowUrl: markerShadow,
+});
 
 const properNames = {
   himachalpradesh: "Himachal Pradesh",
@@ -18,11 +30,26 @@ const MapComponent = ({ address }) => {
   const state = properNames[address.state] || address.state;
   const place = `${address.area}, ${city}, ${state}`;
 
-  const [coordinates, setCoordinates] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // Use saved coordinates when the property has them; otherwise geocode.
+  const lat = Number(address.latitude);
+  const lng = Number(address.longitude);
+  const savedCoordinates =
+    address.latitude != null &&
+    address.longitude != null &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    Math.abs(lat) <= 90 &&
+    Math.abs(lng) <= 180
+      ? [lat, lng]
+      : null;
+
+  const [geocoded, setGeocoded] = useState([]);
+  const [loading, setLoading] = useState(!savedCoordinates);
   const [error, setError] = useState(null);
+  const coordinates = savedCoordinates || geocoded;
 
   useEffect(() => {
+    if (savedCoordinates) return undefined;
     let isMounted = true;
 
     const searchTexts = [
@@ -44,14 +71,14 @@ const MapComponent = ({ address }) => {
           if (!isMounted) return;
 
           if (data.length > 0) {
-            setCoordinates([Number(data[0].lat), Number(data[0].lon)]);
+            setGeocoded([Number(data[0].lat), Number(data[0].lon)]);
             setLoading(false);
             return;
           }
         }
 
         if (isMounted) {
-          setCoordinates([]);
+          setGeocoded([]);
           setLoading(false);
         }
       } catch (error) {
@@ -67,7 +94,8 @@ const MapComponent = ({ address }) => {
     return () => {
       isMounted = false;
     };
-  }, [address.area, city, state]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [address.area, city, state, address.latitude, address.longitude]);
 
   return (
     <div>

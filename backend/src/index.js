@@ -44,6 +44,7 @@ app.use(
   helmet({
     contentSecurityPolicy: false, // Disables strict CSP to allow Razorpay Checkout script and CDN assets
     crossOriginEmbedderPolicy: false,
+    referrerPolicy: { policy: "strict-origin-when-cross-origin" },
   })
 );
 
