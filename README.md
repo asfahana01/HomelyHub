@@ -6,10 +6,6 @@ client is a React single-page application; an Express API owns authentication,
 authorization, property and booking data, Razorpay payment confirmation, refund
 processing, and Groq-backed AI requests.
 
-> **Implementation note:** This documentation describes the repository source
-> and declared configuration. It does not certify a deployed instance, live
-> payment behavior, or MongoDB transaction/concurrency behavior.
-
 ## Project goals and users
 
 The application brings property discovery, host listing management, guest
