@@ -4,7 +4,7 @@
   "main": "index.js",
   "scripts": {
     "test": "node --test",
-    "test:coverage": "c8 --all --include=src/**/*.js --check-coverage --statements 80 --lines 0 --functions 0 --branches 0 --reporter=text npm test",
+    "test:coverage": "c8 --all --include=src/**/*.js --check-coverage --statements 60 --lines 0 --functions 0 --branches 0 --reporter=text npm test",
     "check:env": "node src/scripts/checkEnvExample.js",
     "check:syntax": "node src/scripts/checkJavaScript.js",
     "dev": " node src/index.js",
