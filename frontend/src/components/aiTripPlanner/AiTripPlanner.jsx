@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import toast from "react-hot-toast";
 import { getTripPlan } from "../../ai/tripPlanner";
 import "../../css/AiTripPlanner.css";
+import { useNavigate } from "react-router-dom";
 
 const INTEREST_OPTIONS = [
   { name: "Beach", icon: "beach_access" },
@@ -24,7 +25,7 @@ const AiTripPlanner = () => {
 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
-
+const navigate = useNavigate();
   const toggleInterest = (interest) => {
     if (interests.includes(interest)) {
       setInterests(interests.filter((item) => item !== interest));
@@ -54,9 +55,21 @@ const AiTripPlanner = () => {
       setResult(data);
       toast.success("Your trip plan is ready");
     } catch (error) {
-      toast.error("Could not create a trip plan, please try again");
-      console.error(error);
-    }
+  console.error("Trip planning error:", error);
+
+  if (error.response?.status === 401) {
+    toast.error("Please log in to access this feature.");
+
+    // Optional: redirect to login
+    navigate("/login");
+    return;
+  }
+
+  toast.error(
+    error.response?.data?.message ||
+    "Unable to generate your trip plan. Please try again."
+  );
+}
     setLoading(false);
   };
 
