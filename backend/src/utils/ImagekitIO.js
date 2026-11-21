@@ -4,19 +4,33 @@
 import ImageKit from "imagekit";
 import dotenv from "dotenv";
 
-
-// load the keys from .env before we use them
 dotenv.config({ path: ".env" });
-// Connect once here, then every file can import and use it.
-// publicKey  - can be seen by anyone
-// privateKey - secret, never on GitHub
-// urlEndpoint - our folder address on ImageKit
-let imagekit = new ImageKit({
-  publicKey: process.env.IMAGE_PUBLICKEY,
-  privateKey: process.env.IMAGE_PRIVATEKEY,
-  urlEndpoint: process.env.IMAGEKIT_URLENDPOINT,
-});
 
+let imagekitInstance;
 
-// authController uses this as imagekit.upload(...)
+const getImageKit = () => {
+  if (imagekitInstance) {
+    return imagekitInstance;
+  }
+
+  const { IMAGE_PUBLICKEY, IMAGE_PRIVATEKEY, IMAGEKIT_URLENDPOINT } =
+    process.env;
+
+  if (!IMAGE_PUBLICKEY || !IMAGE_PRIVATEKEY || !IMAGEKIT_URLENDPOINT) {
+    throw new Error("ImageKit environment variables are not configured.");
+  }
+
+  imagekitInstance = new ImageKit({
+    publicKey: IMAGE_PUBLICKEY,
+    privateKey: IMAGE_PRIVATEKEY,
+    urlEndpoint: IMAGEKIT_URLENDPOINT,
+  });
+
+  return imagekitInstance;
+};
+
+const imagekit = {
+  upload: (...args) => getImageKit().upload(...args),
+};
+
 export default imagekit;

@@ -90,7 +90,7 @@ describe("authentication session lifecycle", () => {
     assert.ok(refreshCookie.options.signed);
     assert.equal(accessCookie.options.httpOnly, true);
     assert.equal(accessCookie.options.sameSite, "strict");
-    assert.equal(accessCookie.options.path, "/api/v1/rent/user");
+    assert.equal(accessCookie.options.path, "/api/v1/rent");
     const decoded = jwt.verify(accessCookie.value, secret);
     assert.equal(decoded.id, userId);
     assert.ok(decoded.sid);
@@ -188,7 +188,20 @@ describe("authentication session lifecycle", () => {
       revokedAt: null,
     });
     assert.equal(refreshFilter.sessionId, "session-to-revoke");
-    assert.equal(res.cookies.filter((cookie) => cookie.cleared).length, 2);
+    const clearedCookies = res.cookies.filter((cookie) => cookie.cleared);
+
+assert.equal(clearedCookies.length, 4);
+
+for (const name of ["jwt", "refreshToken"]) {
+  const paths = clearedCookies
+    .filter((cookie) => cookie.name === name)
+    .map((cookie) => cookie.options.path);
+
+  assert.deepEqual(paths.sort(), [
+    "/api/v1/rent",
+    "/api/v1/rent/user",
+  ].sort());
+}
     assert.equal(res.statusCode, 200);
   });
 });
