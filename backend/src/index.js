@@ -37,6 +37,9 @@ const frontendDist = path.resolve(
 );
 
 const app = express();
+// Render sits behind one reverse proxy. Without this, every visitor shares the
+// proxy's IP, so the per-IP rate limits apply to all users combined.
+app.set("trust proxy", 1);
 app.use(requestIdMiddleware);
 
 // 1. HTTP Security Headers
