@@ -453,9 +453,25 @@
   background: #0b7344;
   color: #fff;
 }
-
 @media (max-width: 768px) {
+  .ai-trip-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    white-space: nowrap;
+    width: max-content;
+    height: 2.25rem;
+    padding: 0 0.75rem;
+    flex-shrink: 0;
+  }
+
   .ai-trip-link span:last-child {
-    display: none;
+    display: inline;
+  }
+
+  .ai-trip-link .material-symbols-outlined {
+    display: inline-block;
+    font-size: 1rem;
   }
 }
