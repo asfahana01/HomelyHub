@@ -2,7 +2,6 @@ import React, { useEffect, useState, useRef } from "react";
 import { Link } from "react-router-dom";
 import gsap from "gsap";
 import "../../css/Home.css";
-
 import {useDispatch, useSelector} from "react-redux";
 import {propertyAction} from "../../store/Property/property-slice"
 import { getAllProperties } from "../../store/Property/property-action";
@@ -36,6 +35,21 @@ const Card = ({ id, image, name, address, price }) => {
 const PropertyList = () => {
   const [currentPage, setCurrentPage] = useState({page:1});
   
+  const previousPageRef = useRef(currentPage.page);
+
+useEffect(() => {
+  if (currentPage.page > previousPageRef.current) {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  } else if (currentPage.page < previousPageRef.current) {
+    window.scrollTo({
+      top: document.documentElement.scrollHeight,
+      behavior: "smooth",
+    });
+  }
+
+  previousPageRef.current = currentPage.page;
+}, [currentPage.page]);
+
   const dispatch = useDispatch();
   const {properties,totalProperties} = useSelector((state)=> state.properties)
 
