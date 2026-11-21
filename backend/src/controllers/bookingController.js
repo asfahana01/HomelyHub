@@ -200,7 +200,16 @@ const createOrder = async (req, res) => {
     });
   }
 };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+const fetchPaymentWhenSettled = async (razorpay, paymentId) => {
+  let payment = await razorpay.payments.fetch(paymentId);
+  for (let i = 0; i < 5 && payment.status === "authorized"; i++) {
+    await sleep(1000);
+    payment = await razorpay.payments.fetch(paymentId);
+  }
+  return payment;
+};
 // 2. VERIFY PAYMENT - verifies Razorpay signature server-side and marks booking paid
 const verifyPayment = async (req, res) => {
   try {
@@ -232,7 +241,7 @@ const verifyPayment = async (req, res) => {
     const razorpay = getRazorpayInstance();
     let payment;
     try {
-      payment = await razorpay.payments.fetch(razorpay_payment_id);
+      payment = await fetchPaymentWhenSettled(razorpay, razorpay_payment_id);
     } catch (fetchErr) {
       logger.error("payment.gateway_fetch_failed", {
         requestId: req.requestId,
@@ -243,7 +252,13 @@ const verifyPayment = async (req, res) => {
         message: "Unable to verify payment with Razorpay. Please try again.",
       });
     }
-
+    if (payment.status === "authorized") {
+  return res.status(202).json({
+    success: false,
+    pending: true,
+    message: "Your payment was received and is being confirmed. Your booking will appear in My Bookings shortly.",
+  });
+}
     const result = await confirmBookingPayment({
       orderId: razorpay_order_id,
       payment,

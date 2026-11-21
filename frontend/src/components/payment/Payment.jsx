@@ -82,16 +82,22 @@ const Payment = () => {
         name: "HomelyHub",
         description: `Booking for ${propertyName || "HomelyHub Rental"}`,
         order_id: orderData.orderId,
+
         handler: async function (response) {
           try {
-            await dispatch(
+            const result = await dispatch(
               verifyPayment({
                 razorpay_order_id: response.razorpay_order_id,
                 razorpay_payment_id: response.razorpay_payment_id,
                 razorpay_signature: response.razorpay_signature,
               })
             );
-            toast.success("🎉 Payment Successful! Booking Confirmed!");
+            if (result?.pending) {
+              // Payment authorized but not captured yet; the webhook will confirm it.
+              toast(result.message, { duration: 6000 });
+            } else {
+              toast.success("Payment Successful and Your Booking is Confirmed!");
+            }
             dispatch(paymentActions.resetPayment());
             setTimeout(() => navigate("/user/mybookings"), 1200);
           } catch (err) {
