@@ -1,4 +1,4 @@
-// ---- APIFeatures: builds the search query, 
+// ---- APIFeatures: builds the search query,
 // The listings page has filters, a search box and pages. Doing
 // all that inside the controller would make it 100 lines long.
 // So we keep it here, and the controller stays clean:
@@ -12,7 +12,7 @@ class APIFeatures {
   // queryString = what the user asked for (req.query), the
   //               part of the address after the ? mark
   constructor(query, queryString) {
-    (this.query = query), (this.queryString = queryString);
+    ((this.query = query), (this.queryString = queryString));
   }
 
   // FILTER - the tick boxes: price, type, room, amenities
@@ -51,15 +51,28 @@ class APIFeatures {
 
     // AMENITIES. May arrive as one value or as a list, so we
     // force it into a list either way.
+    // AMENITIES: Match properties containing ANY selected amenity,
+    // ignoring differences in letter casing.
     if (queryObj.amenities) {
-      const amenitiesArray = Array.isArray(queryObj.amenities)
-        ? queryObj.amenities
-        : [queryObj.amenities];
+      const amenitiesArray = (
+        Array.isArray(queryObj.amenities)
+          ? queryObj.amenities
+          : [queryObj.amenities]
+      ).filter(Boolean);
 
-      // the dot goes INSIDE the amenities object.
-      // $all = must have ALL of them, not just one.
-      filterQuery["amenities.name"] = { $all: amenitiesArray };
+      if (amenitiesArray.length > 0) {
+        filterQuery["amenities.name"] = {
+          $in: amenitiesArray.map(
+            (amenity) =>
+              new RegExp(
+                `^${amenity.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+                "i",
+              ),
+          ),
+        };
+      }
     }
+
     // add these rules to the search. Nothing runs yet - mongoose
     // only collects the rules until we await it.
     this.query = this.query.find(filterQuery);
@@ -67,7 +80,6 @@ class APIFeatures {
     // be joined on with a dot: .filter().search().paginate()
     return this;
   }
-
 
   // SEARCH - the box on top: city, guests, dates
   search() {
@@ -129,7 +141,6 @@ class APIFeatures {
     return this;
   }
 
-
   // PAGINATE - show 12 at a time, not 500 at once
   paginate() {
     // * 1 turns the text '2' into the number 2.
@@ -145,7 +156,6 @@ class APIFeatures {
     return this;
   }
 }
-
 
 // propertyController imports this to build the listings search
 export { APIFeatures };
