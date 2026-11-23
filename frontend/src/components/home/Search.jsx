@@ -9,9 +9,14 @@ import { getAllProperties } from "../../store/Property/property-action";
 
 const Search = () => {
   const { RangePicker } = DatePicker;
-  const [keyword, setKeyword] = useState({});
-  const [value, setValue] = useState([]);
+  const [keyword, setKeyword] = useState({
+    city: "",
+    guests: "",
+    dateIn: "",
+    dateOut: "",
+  });
 
+  const [value, setValue] = useState([]);
   const dispatch = useDispatch();
 
   function searchHandler(e) {
@@ -29,10 +34,19 @@ const Search = () => {
     setValue([]);
   }
 
-  function returnDates(date, dateString) {
-    setValue([date[0], date[1]]);
-    updateKeyword("dateIn", dateString[0]);
-    updateKeyword("dateOut", dateString[1]);
+  function returnDates(dates) {
+    if (!dates || !dates[0] || !dates[1]) {
+      setValue([]);
+      updateKeyword("dateIn", "");
+      updateKeyword("dateOut", "");
+      return;
+    }
+
+    setValue(dates);
+
+    // Send ISO date format to the backend.
+    updateKeyword("dateIn", dates[0].format("YYYY-MM-DD"));
+    updateKeyword("dateOut", dates[1].format("YYYY-MM-DD"));
   }
 
   const updateKeyword = (field, value) => {
@@ -70,7 +84,13 @@ const Search = () => {
           id="addguest"
           placeholder="Add guests"
           type="number"
-          onChange={(e) => updateKeyword("guests", +e.target.value)}
+          value={keyword.guests}
+          onChange={(e) =>
+            updateKeyword(
+              "guests",
+              e.target.value === "" ? "" : Number(e.target.value),
+            )
+          }
         />
         <span
           className="material-symbols-outlined searchicon"

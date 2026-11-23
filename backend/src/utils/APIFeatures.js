@@ -113,27 +113,25 @@ class APIFeatures {
     // $elemMatch looks inside the currentBookings list,
     // $not turns it around: show me the ones where NO booking
     // clashes with the dates the guest asked for.
+    // DATES - exclude properties with overlapping bookings.
     if (queryObj.dateIn && queryObj.dateOut) {
-      searchQuery.$and = [
-        {
-          currentBookings: {
-            $not: {
-              $elemMatch: {
-                $or: [
-                  {
-                    fromDate: { $lt: queryObj.dateOut },
-                    toDate: { $gt: queryObj.dateIn },
-                  },
-                  {
-                    fromDate: { $lt: queryObj.dateIn },
-                    toDate: { $gt: queryObj.dateIn },
-                  },
-                ],
-              },
+      const checkIn = new Date(`${queryObj.dateIn}T00:00:00.000Z`);
+      const checkOut = new Date(`${queryObj.dateOut}T00:00:00.000Z`);
+
+      if (
+        !Number.isNaN(checkIn.getTime()) &&
+        !Number.isNaN(checkOut.getTime()) &&
+        checkOut > checkIn
+      ) {
+        searchQuery.currentBookings = {
+          $not: {
+            $elemMatch: {
+              fromDate: { $lt: checkOut },
+              toDate: { $gt: checkIn },
             },
           },
-        },
-      ];
+        };
+      }
     }
 
     // add these rules on top of the filter rules
