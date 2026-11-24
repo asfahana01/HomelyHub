@@ -30,7 +30,7 @@ provider, Groq, or Razorpay account.
 - [`security.test.js`](security.test.js) — token/signature checks, role and
   filtering helpers, booking defaults, and NoSQL sanitization.
 
-Coverage is set to an 80% statement threshold by `npm run test:coverage`. This
+Coverage is set to a 60% statement threshold by `npm run test:coverage`. This
 documents the configured gate only; whether the current tree meets it must be
 determined by running the command. No live-service or replica-set integration
 suite is declared by the package scripts.

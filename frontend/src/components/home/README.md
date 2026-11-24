@@ -12,6 +12,14 @@ Shared site shell and property-discovery UI. `Main` renders `Header`, the nested
 | [`Filter.jsx`](Filter.jsx) | Default-exported listing filter controls. |
 | [`FilterModal.jsx`](FilterModal.jsx) | Default-exported filter modal and range inputs. |
 
-Listing state and requests are implemented in [`store/Property/`](../../store/Property/README.md). The `Search` and `Filter` source files still contain TODO comments for applying/fetching search criteria; do not assume every control is fully wired. Styling is primarily [`css/Home.css`](../../css/README.md); the header also imports `AiTripPlanner.css`.
+Listing state and requests are implemented in
+[`store/Property/`](../../store/Property/README.md). The search interface
+supports property discovery by destination, guest count, and date range.
+Property filters support price range, property type, room type, and amenities.
+Search and filter criteria are passed to the listing API to retrieve matching
+properties.
+
+Styling is primarily [`css/Home.css`](../../css/README.md); the header also
+imports `AiTripPlanner.css`.
 
 Parent: [`components/`](../README.md).

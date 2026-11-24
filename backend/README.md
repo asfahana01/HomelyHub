@@ -22,7 +22,7 @@ Install dependencies with `npm install`. From this directory:
 | `npm test` | Run the Node built-in test runner over `tests/`. |
 | `npm run check:syntax` | Check JavaScript syntax in the project source. |
 | `npm run check:env` | Check that the environment template and required names stay aligned. |
-| `npm run test:coverage` | Run tests with `c8`; the configured statement threshold is 80%. |
+| `npm run test:coverage` | Run tests with `c8`; the configured statement threshold is 60%. |
 
 `src/index.js` validates configuration (except in test mode), configures Express
 middleware and route mounts, connects to MongoDB, starts the refund worker, and

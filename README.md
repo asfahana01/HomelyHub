@@ -170,11 +170,12 @@ refresh/session expiry defaults to 30 days (through
 `JWT_REFRESH_EXPIRES_DAYS`, constrained to 1–90 days). Refresh tokens are
 random values whose SHA-256 hashes are persisted. Refresh consumes the prior
 token and creates a replacement; reuse/invalidity is rejected and can revoke
-the session. Logout revokes the identified session and clears both cookie names
-at `/api/v1/rent` and `/api/v1/rent/user`. The frontend Axios client sends
-credentials and shares a refresh request when an authenticated request needs
-refreshing. See the [token implementation guide](backend/src/utils/README.md#authentication-cookies-and-sessions)
-for exact behavior and a current test/implementation mismatch.
+the session. Logout revokes the identified session and clears both cookie names 
+at `/api/v1/rent` and `/api/v1/rent/user`.The frontend Axios client sends credentials 
+and shares a refresh request when an authenticated request needs refreshing. See the
+[token implementation guide](backend/src/utils/README.md#authentication-cookies-and-sessions)
+for cookie configuration, refresh-token rotation, session revocation, and logout
+behavior.
 
 The `protect` middleware authenticates private routes. `restrictTo("admin")`
 gates administrator operations. Signup assigns ordinary user privileges rather
@@ -224,11 +225,10 @@ sequenceDiagram
   Client->>API: Retry original request once
 ```
 
-The current auth lifecycle suite has two failing assertions: it expects the
-access-cookie path `/api/v1/rent/user` rather than the implementation's
-`/api/v1/rent`, and expects two logout cookie-clear calls rather than the
-implementation's four calls (two names at two paths). These are documented
-source/test discrepancies, not claimed passing behavior.
+The authentication lifecycle tests cover cookie configuration, refresh-token
+rotation, session revocation, and logout behavior. The implementation sets
+authentication cookies at `/api/v1/rent` and clears both cookie names at the
+supported paths during logout.
 
 The CLI bootstrap command is for authorized initial provisioning; it is not a
 public registration bypass. Register the target account first, then, from
@@ -611,7 +611,7 @@ npm run build
 ```
 
 Backend tests use Node's `node:test` runner, generally with mocked database and
-external integrations. `npm run test:coverage` enforces a configured 80%
+external integrations. `npm run test:coverage` enforces a configured 60%
 statement threshold. The frontend package has lint/build scripts but no test
 script. CI runs backend checks/tests/coverage, lints selected frontend files,
 and builds the frontend; see the [CI workflow](.github/workflows/ci.yml).

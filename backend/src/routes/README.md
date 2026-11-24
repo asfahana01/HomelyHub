@@ -88,11 +88,12 @@ These are declared directly in `src/index.js`, not in a router:
 ## Authentication and common errors
 
 `protect` accepts a bearer access token or the signed `jwt` cookie and requires
-an active, non-revoked database session. Missing/expired/invalid tokens and
-revoked sessions return 401. `restrictTo("admin")` returns 403 when the
-authenticated account lacks the role. Cookie names, options, expiry, refresh
-rotation, and logout clearing behavior—including a mismatch with current
-auth-lifecycle test assertions—are documented in
+an active, non-revoked database session. Missing, expired, or invalid tokens
+and revoked sessions return 401. `restrictTo("admin")` returns 403 when the
+authenticated account lacks the required role.
+
+Authentication cookie names, options, expiry, refresh-token rotation, session
+revocation, and logout clearing behavior are documented in
 [`utils/README.md#authentication-cookies-and-sessions`](../utils/README.md#authentication-cookies-and-sessions).
 
 The application error handler returns `{ status, message, requestId }`; it

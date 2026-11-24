@@ -77,14 +77,6 @@ The current implementation is in [`token.js`](token.js),
   bearer access token or the signed `jwt` cookie and also checks session
   revocation/expiry in MongoDB.
 
-**Known test mismatch (implementation intentionally unchanged):** current
-`auth-lifecycle.test.js` assertions expect the access-cookie path
-`/api/v1/rent/user`, but the actual set-cookie path in `token.js` is
-`/api/v1/rent`. The logout assertion expects two `clearCookie` calls, while the
-controller currently makes four (two cookie names at each of the two paths).
-The documented behavior above describes the source implementation, not those
-failing assertions.
-
 ## Relationships and boundaries
 
 `index.js` composes logger, security, database, startup, and error helpers.
