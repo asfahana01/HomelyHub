@@ -170,9 +170,14 @@ refresh/session expiry defaults to 30 days (through
 `JWT_REFRESH_EXPIRES_DAYS`, constrained to 1–90 days). Refresh tokens are
 random values whose SHA-256 hashes are persisted. Refresh consumes the prior
 token and creates a replacement; reuse/invalidity is rejected and can revoke
-the session. Logout revokes the identified session and clears both cookie names 
-at `/api/v1/rent` and `/api/v1/rent/user`.The frontend Axios client sends credentials 
-and shares a refresh request when an authenticated request needs refreshing. See the
+the session. Logout revokes the identified session and clears both cookie names
+at `/api/v1/rent` and `/api/v1/rent/user`.
+
+The frontend Axios client sends credentials and shares a refresh request when
+an authenticated request needs refreshing. See the
+[token implementation guide](backend/src/utils/README.md#authentication-cookies-and-sessions)
+for cookie configuration, refresh-token rotation, session revocation, and logout
+behavior.
 [token implementation guide](backend/src/utils/README.md#authentication-cookies-and-sessions)
 for cookie configuration, refresh-token rotation, session revocation, and logout
 behavior.
@@ -505,7 +510,7 @@ integrating; the route table is not a substitute for their validation logic.
 - Razorpay Test Mode payment/refund flows require manual gateway verification;
   no live payment behavior is certified by this documentation.
 - Groq output validation constrains structure, not factual accuracy.
-- The backend 80% statement-coverage threshold is configured; consult the
+- The backend 60% statement-coverage threshold is configured; consult the
   current test/coverage run before treating it as met.
 - `frontend/src/components/propertyListing/PropertyListing.jsx` references
   `/assets/placeholder.jpg`, which the frontend documentation reports as
