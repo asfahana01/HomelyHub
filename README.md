@@ -8,11 +8,11 @@ processing, and Groq-backed AI requests.
 
 ## Project goals and users
 
-The application brings property discovery, host listing management, guest
-bookings, online payment, and trip planning into one web experience. Guests
-browse listings, reserve dates, pay, and review or cancel their bookings.
-Administrators manage listings and user roles. Local developers and maintainers
-can run the React and Express applications independently.
+The application brings property discovery, administrator-managed listings,
+guest bookings, online payment, and trip planning into one web experience.
+Guests browse listings, reserve dates, pay, and review or cancel their bookings.
+Administrators manage property listings and user roles. Local developers and
+maintainers can run the React and Express applications independently.
 
 ## Features
 
@@ -48,7 +48,7 @@ not necessarily the exact installed versions.
 
 ```mermaid
 flowchart LR
-  Guest[Guest / host / administrator] --> Browser[React application]
+  Guest[Guest / administrator] --> Browser[React application]
   Browser --> Redux[Redux Toolkit actions and slices]
   Redux --> Axios[Axios client with credentials]
   Axios --> API[Express 5 API]
@@ -175,9 +175,6 @@ at `/api/v1/rent` and `/api/v1/rent/user`.
 
 The frontend Axios client sends credentials and shares a refresh request when
 an authenticated request needs refreshing. See the
-[token implementation guide](backend/src/utils/README.md#authentication-cookies-and-sessions)
-for cookie configuration, refresh-token rotation, session revocation, and logout
-behavior.
 [token implementation guide](backend/src/utils/README.md#authentication-cookies-and-sessions)
 for cookie configuration, refresh-token rotation, session revocation, and logout
 behavior.
@@ -492,8 +489,8 @@ integrating; the route table is not a substitute for their validation logic.
   sessions and refresh revocation.
 - Signed HttpOnly cookies and credentialed CORS configured for the frontend.
 - `protect` and role middleware enforce access on the server.
-- Zod request validation rejects invalid/unknown input; NoSQL operator
-  sanitization and endpoint rate limits provide additional controls.
+- Zod request schemas validate incoming data and constrain accepted fields;
+  NoSQL operator sanitization and endpoint rate limits provide additional controls.
 - Helmet adds HTTP security headers; CORS uses configured origins.
 - Payment and webhook HMAC signatures are verified using timing-safe
   comparisons. Webhook processing uses the raw body and a dedicated webhook
@@ -639,8 +636,8 @@ These are recommendations, not claims about existing features:
 
 - Add MongoDB replica-set integration tests for transaction and concurrency
   guarantees.
-- Raise backend statement coverage to its configured threshold and add frontend
-  component/API tests.
+- Increase backend statement coverage beyond the configured 60% minimum
+  and add frontend component/API tests.
 - Add operational dashboards and alerts for exhausted refund retries and
   webhook delivery failures.
 - Verify and restore the missing placeholder image reference or remove the
